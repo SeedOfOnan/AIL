@@ -32,6 +32,9 @@ def runExample (ex : Example) : IO Unit := do
       IO.println s!"  checkStore: FAIL  (type error at hash {h})"
   | .ok tyEnv =>
       IO.println   "  checkStore: PASS"
+      let warns := readClearsWarnings ex.store
+      for w in warns do
+        IO.println s!"  {w}"
       match compile ex.store tyEnv ex.ivt with
       | .error msg =>
           IO.println s!"  compile:    FAIL  ({msg})"
@@ -365,10 +368,15 @@ def ex06_uart_rx : Example :=
                 #["early ISR exit"]) "early_retfie"
   let h_early_retfie := hashNode n_early_retfie
 
-  -- read_rcreg: MOVF RCREG, W — reads the received byte into WREG.
-  -- Used for both the FERR discard (result ignored) and the main read
-  -- (result consumed by do_push via implicit WREG passing).
-  -- Two uses, same node: content-addressing deduplicates correctly.
+  -- discard_rcreg: MOVF RCREG, W — reads RCREG solely to advance the hardware
+  -- FIFO on a FERR byte.  Uses .loadDiscard to suppress the read_clears warning.
+  let n_discard_rcreg : Node := .proc #[] #[]
+    (.atomic (.abstract .loadDiscard) #[h_RCREG] #[]) "discard_rcreg"
+  let h_discard_rcreg := hashNode n_discard_rcreg
+
+  -- read_rcreg: MOVF RCREG, W — reads the received byte into WREG for use
+  -- in do_push.  Uses .load (not .loadDiscard); will warn until SSA wiring
+  -- tracks WREG flow and can confirm the result is consumed.
   let n_read_rcreg : Node := .proc #[] #[]
     (.atomic (.abstract .load) #[h_RCREG] #[]) "read_rcreg"
   let h_read_rcreg := hashNode n_read_rcreg
@@ -395,9 +403,9 @@ def ex06_uart_rx : Example :=
     (.atomic (.abstract .testBit) #[h_FERR] #[]) "test_ferr"
   let h_test_ferr := hashNode n_test_ferr
 
-  -- discard_and_retfie: read RCREG (advances FIFO, discards errored byte) then retfie.
+  -- discard_and_retfie: discard the errored byte (advances FIFO), then retfie.
   let n_discard_and_retfie : Node := .proc #[] #[]
-    (.seq #[h_read_rcreg, h_early_retfie]) "discard_and_retfie"
+    (.seq #[h_discard_rcreg, h_early_retfie]) "discard_and_retfie"
   let h_discard_and_retfie := hashNode n_discard_and_retfie
 
   -- if_ferr: if FERR { discard + retfie } else { nop }
@@ -476,6 +484,7 @@ def ex06_uart_rx : Example :=
   let s := Store.insert s           h_nop               n_nop
   let s := Store.insert s           h_panic             n_panic
   let s := Store.insert s           h_early_retfie      n_early_retfie
+  let s := Store.insert s           h_discard_rcreg     n_discard_rcreg
   let s := Store.insert s           h_read_rcreg        n_read_rcreg
   let s := Store.insert s           h_test_oerr         n_test_oerr
   let s := Store.insert s           h_if_oerr           n_if_oerr

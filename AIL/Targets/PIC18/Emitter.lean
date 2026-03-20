@@ -217,8 +217,11 @@ private def emitOp (ref : OpRef) (reads writes : Array Hash) : Emit Unit := do
   match ref with
   | .abstract op =>
       match op with
-      | .load    =>
-          -- MOVF src, W  — load byte to WREG
+      | .load | .loadDiscard =>
+          -- MOVF src, W  — load byte to WREG.
+          -- loadDiscard: same instruction; the distinction is in the type checker
+          -- (load on a read_clears peripheral warns if result is untracked;
+          --  loadDiscard suppresses that warning — explicit intentional discard).
           let src ← resolveAddr (← reads[0]? |>.elim (throw "load: no source") pure)
           out (.movf src .w)
       | .store   =>

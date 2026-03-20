@@ -82,10 +82,12 @@ inductive AbstractOp where
   | add | sub | mul
   | and | or | xor | not
   | shiftL | shiftR
-  | testBit   -- read a bitField node; emits BTFSS (skip if set — condition true)
-  | setBit    -- write 1 to a bitField node; emits BSF
-  | clearBit  -- write 0 to a bitField node; emits BCF
-  | load | store
+  | testBit    -- read a bitField node; emits BTFSS (skip if set — condition true)
+  | setBit     -- write 1 to a bitField node; emits BSF
+  | clearBit   -- write 0 to a bitField node; emits BCF
+  | load       -- read a location into WREG; WARN if source is read_clears and result unused
+  | loadDiscard -- read a read_clears location, explicitly discarding the result; no warning
+  | store
   | compare
 deriving Repr, BEq, DecidableEq
 

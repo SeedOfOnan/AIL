@@ -71,11 +71,12 @@ private def serFormalKind : FormalKind → ByteArray
   | .unit             => serU8 2
 
 private def serAbstractOp : AbstractOp → ByteArray
-  | .add      => serU8  0  | .sub      => serU8  1  | .mul     => serU8  2
-  | .and      => serU8  3  | .or       => serU8  4  | .xor     => serU8  5
-  | .not      => serU8  6  | .shiftL   => serU8  7  | .shiftR  => serU8  8
-  | .testBit  => serU8  9  | .load     => serU8 10  | .store   => serU8 11
-  | .compare  => serU8 12  | .setBit   => serU8 13  | .clearBit => serU8 14
+  | .add         => serU8  0  | .sub         => serU8  1  | .mul         => serU8  2
+  | .and         => serU8  3  | .or          => serU8  4  | .xor         => serU8  5
+  | .not         => serU8  6  | .shiftL      => serU8  7  | .shiftR      => serU8  8
+  | .testBit     => serU8  9  | .load        => serU8 10  | .store       => serU8 11
+  | .compare     => serU8 12  | .setBit      => serU8 13  | .clearBit    => serU8 14
+  | .loadDiscard => serU8 15
 
 private def serOpRef : OpRef → ByteArray
   | .abstract op => serU8 0 ++ serAbstractOp op

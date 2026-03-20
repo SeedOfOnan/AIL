@@ -251,4 +251,38 @@ def checkStore (cfg : TargetConfig) (s : Store) : Except (TyEnv × Hash) TyEnv :
     | some t => pure (fun h' => if h' == h then some t else env h')
   ) (fun _ => none) arr
 
+-- ---------------------------------------------------------------------------
+-- read_clears warning pass
+--
+-- Scans the store for atomic .load operations on peripherals with
+-- sideEffectOnRead = true (i.e. read_clears registers) where the result
+-- is not explicitly acknowledged.
+--
+-- The agent suppresses the warning by using AbstractOp.loadDiscard instead
+-- of AbstractOp.load — the Store-level equivalent of `_ = RCREG`.
+--
+-- Returns one warning string per offending node (hash + label).
+-- Does not fail: warnings are informational, not errors.
+-- ---------------------------------------------------------------------------
+
+/-- Return a warning string for each node that reads a read_clears peripheral
+    via AbstractOp.load without explicit discard acknowledgement.
+    Nodes using AbstractOp.loadDiscard are silently accepted. -/
+def readClearsWarnings (s : Store) : Array String :=
+  (s : Array (Hash × Node)).foldl (fun acc (pair : Hash × Node) =>
+    let (h, n) := pair
+    match n with
+    | Node.proc _ _ (ProcBody.atomic (.abstract .load) reads _) label =>
+        let offenders := reads.filterMap fun rh =>
+          match s.lookup rh with
+          | some (Node.peripheral _ _ sem lbl) =>
+              if sem.sideEffectOnRead then some lbl else none
+          | _ => none
+        if offenders.isEmpty then acc
+        else
+          let regs := String.intercalate ", " offenders.toList
+          acc.push s!"warning: node '{label}' (hash {h}) reads read_clears register(s) [{regs}] via .load — use .loadDiscard to acknowledge intentional discard"
+    | _ => acc
+  ) #[]
+
 end AIL
