@@ -252,6 +252,38 @@ impl RingBuf[T, N] {
 **Power-of-2 constraint:** enforced by a compile-time assertion in the
 type definition, not by the language.
 
+---
+
+## Option[T] — nullable results
+
+`Option[T]` is **user-definable**, not a language primitive.
+
+**AST-direct encoding:** a pair of nodes — a `bool` valid flag and a `data`
+value node. The valid flag is a `Node.data .data .w8` (or `.bitField` in a
+packed layout). Reading the pair yields either `(true, value)` or
+`(false, <unspecified>)`.
+
+**Example (AST-direct, 8-bit value):**
+```lean
+let n_opt_valid : Node := .data .data .w8 optValidAddr (pfx ++ "_valid")
+let n_opt_value : Node := .data .data .w8 optValueAddr (pfx ++ "_value")
+```
+
+**Why not a language primitive:** On PIC18 there is no single instruction
+for optional types. The most efficient encoding (flag byte, bitField in a
+packed register, or a sentinel value) is application-specific. Defining
+`Option[T]` in terms of existing AIL primitives means the agent can choose
+the right layout for the hardware without compiler involvement.
+
+**Surface syntax (future):**
+```
+type Option[T] {
+    valid : bool
+    value : T
+}
+```
+Once user-defined parameterized types land, `Option[T]` is one line.
+
 **Current AST-direct implementation:** `AIL/Lib/RingBuf.lean` provides
 `makeRingBuf`, which constructs all Store nodes for a ring buffer without
 surface-syntax support. Agents building programs before the surface language
