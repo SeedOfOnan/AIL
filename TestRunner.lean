@@ -264,11 +264,240 @@ def ex05_two_vec : Example :=
     store := s, ivt := #[(0, h_reset), (1, h_timer)] }
 
 -- ---------------------------------------------------------------------------
+-- Ex06: UART receive interrupt handler (PIC18, high-priority ISR)
+--
+-- Demonstrates: Node.peripheral (SFR), Node.bitField, AbstractOp.testBit
+-- (BTFSS), peripheral reads (MOVF), and cond nesting for guard-style
+-- early exits.
+--
+-- The ring buffer operations (is_full, push) use ProcBody.intrinsic because
+-- AIL#4 (fixed-size arrays) and AIL#5 (user-defined types) are not yet
+-- implemented.  When those land, the intrinsics below should be replaced
+-- with proper Store nodes.
+--
+-- Design decisions:
+--   - Hardware OERR → panic (infinite loop)
+--   - FERR         → discard byte (read RCREG to advance FIFO), retfie
+--   - Ring buffer full → set rx_buf_overrun flag, retfie
+--   - Push          → FSR0 indirect write to buf[tail], advance tail (& 0x1F)
+--
+-- vec 1 = high-priority ISR vector (0x0008 on classic PIC18).
+-- Context save/restore emitted by caller (TODO: emitter ISR prologue/epilogue).
+--
+-- Expected PIC18 output (core logic; intrinsic bodies still emitted as
+-- comment blocks until the typed-intrinsic TODO is resolved):
+--   btfss  RCSTA, 1, c       ; skip if OERR set
+--   goto   _else_0           ; OERR clear → skip to else
+--   L_panic: bra L_panic     ; panic
+--   ...
+-- ---------------------------------------------------------------------------
+
+def ex06_uart_rx : Example :=
+  -- -------------------------------------------------------------------------
+  -- Peripheral nodes
+  -- -------------------------------------------------------------------------
+  let sem_rcsta : AccessSemantics :=
+    { readable := true, writable := true,
+      sideEffectOnRead := false, sideEffectOnWrite := false, accessWidth := .w8 }
+  let n_RCSTA : Node := .peripheral .sfr 0xFAB sem_rcsta "RCSTA"
+  let h_RCSTA := hashNode n_RCSTA
+
+  -- RCREG: read-only, reading clears the hardware FIFO slot (read_clears).
+  let sem_rcreg : AccessSemantics :=
+    { readable := true, writable := false,
+      sideEffectOnRead := true, sideEffectOnWrite := false, accessWidth := .w8 }
+  let n_RCREG : Node := .peripheral .sfr 0xFAE sem_rcreg "RCREG"
+  let h_RCREG := hashNode n_RCREG
+
+  -- -------------------------------------------------------------------------
+  -- Bit field nodes
+  -- -------------------------------------------------------------------------
+  let n_OERR : Node := .bitField h_RCSTA 1 "OERR"
+  let h_OERR := hashNode n_OERR
+  let n_FERR : Node := .bitField h_RCSTA 2 "FERR"
+  let h_FERR := hashNode n_FERR
+
+  -- -------------------------------------------------------------------------
+  -- Static RAM: ring buffer state
+  -- -------------------------------------------------------------------------
+  let n_rx_head    : Node := .data .data .w8 0x20 "rx_buf_head"
+  let h_rx_head    := hashNode n_rx_head
+  let n_rx_tail    : Node := .data .data .w8 0x21 "rx_buf_tail"
+  let h_rx_tail    := hashNode n_rx_tail
+  let n_rx_overrun : Node := .data .data .w8 0x22 "rx_buf_overrun"
+  let h_rx_overrun := hashNode n_rx_overrun
+  -- rx_buf_data: 32-byte ring buffer body at 0x23–0x42.
+  -- Represented by its base address node only; FSR indirect used in intrinsics.
+  -- TODO: replace with Node.staticArray once AIL#4 is implemented.
+  let n_rx_data    : Node := .data .data .w8 0x23 "rx_buf_data"
+  let h_rx_data    := hashNode n_rx_data
+
+  -- -------------------------------------------------------------------------
+  -- Bool formals (one per distinct cond test)
+  -- -------------------------------------------------------------------------
+  let n_bool_0 : Node := .formal 0 .bool
+  let h_bool_0 := hashNode n_bool_0
+  let n_bool_1 : Node := .formal 1 .bool
+  let h_bool_1 := hashNode n_bool_1
+  let n_bool_2 : Node := .formal 2 .bool
+  let h_bool_2 := hashNode n_bool_2
+
+  -- -------------------------------------------------------------------------
+  -- Leaf procs
+  -- -------------------------------------------------------------------------
+
+  -- nop: empty body — used as the else-branch of guard-style conds.
+  let n_nop : Node := .proc #[] #[] (.seq #[]) "nop"
+  let h_nop := hashNode n_nop
+
+  -- panic: infinite loop.
+  -- Typed proc [] [] (not proc [] [Never]) so it matches nop in cond branches.
+  -- The Never semantics are implicit: bra L_panic never returns.
+  let n_panic : Node := .proc #[] #[]
+    (.intrinsic #["L_panic:", "    bra     L_panic"] #[] #[]
+                #["halt: never returns"]) "panic"
+  let h_panic := hashNode n_panic
+
+  -- early_retfie: return from ISR without continuing the handler body.
+  -- Used after FERR discard and after ring-buffer-full detection.
+  let n_early_retfie : Node := .proc #[] #[]
+    (.intrinsic #["    retfie  0"] #[] #[]
+                #["early ISR exit"]) "early_retfie"
+  let h_early_retfie := hashNode n_early_retfie
+
+  -- read_rcreg: MOVF RCREG, W — reads the received byte into WREG.
+  -- Used for both the FERR discard (result ignored) and the main read
+  -- (result consumed by do_push via implicit WREG passing).
+  -- Two uses, same node: content-addressing deduplicates correctly.
+  let n_read_rcreg : Node := .proc #[] #[]
+    (.atomic (.abstract .load) #[h_RCREG] #[]) "read_rcreg"
+  let h_read_rcreg := hashNode n_read_rcreg
+
+  -- -------------------------------------------------------------------------
+  -- Guard: if OERR { panic }
+  -- -------------------------------------------------------------------------
+
+  -- test_oerr: BTFSS RCSTA, 1 — skip if OERR set (condition = OERR is set).
+  let n_test_oerr : Node := .proc #[] #[h_bool_0]
+    (.atomic (.abstract .testBit) #[h_OERR] #[]) "test_oerr"
+  let h_test_oerr := hashNode n_test_oerr
+
+  -- if_oerr: if OERR { panic } else { nop }
+  let n_if_oerr : Node := .proc #[] #[] (.cond h_test_oerr h_panic h_nop) "if_oerr"
+  let h_if_oerr := hashNode n_if_oerr
+
+  -- -------------------------------------------------------------------------
+  -- Guard: if FERR { discard byte; retfie }
+  -- -------------------------------------------------------------------------
+
+  -- test_ferr: BTFSS RCSTA, 2 — skip if FERR set.
+  let n_test_ferr : Node := .proc #[] #[h_bool_1]
+    (.atomic (.abstract .testBit) #[h_FERR] #[]) "test_ferr"
+  let h_test_ferr := hashNode n_test_ferr
+
+  -- discard_and_retfie: read RCREG (advances FIFO, discards errored byte) then retfie.
+  let n_discard_and_retfie : Node := .proc #[] #[]
+    (.seq #[h_read_rcreg, h_early_retfie]) "discard_and_retfie"
+  let h_discard_and_retfie := hashNode n_discard_and_retfie
+
+  -- if_ferr: if FERR { discard + retfie } else { nop }
+  let n_if_ferr : Node := .proc #[] #[]
+    (.cond h_test_ferr h_discard_and_retfie h_nop) "if_ferr"
+  let h_if_ferr := hashNode n_if_ferr
+
+  -- -------------------------------------------------------------------------
+  -- Ring buffer: is_full check and push
+  -- TODO: replace intrinsics with proper Store nodes once AIL#4/#5 land.
+  -- -------------------------------------------------------------------------
+
+  -- test_is_full: (tail+1) & 0x1F == head → CPFSEQ skip if equal (full).
+  -- Reads rx_buf_head and rx_buf_tail; produces a bool formal.
+  let n_test_is_full : Node := .proc #[] #[h_bool_2]
+    (.intrinsic
+      #["    incf    _rx_tail, w, c",
+        "    andlw   0x1f",
+        "    cpfseq  _rx_head, c"]
+      #[h_rx_head, h_rx_tail] #[]
+      #["condition: (tail+1)&31 == head (buffer full)"]) "test_is_full"
+  let h_test_is_full := hashNode n_test_is_full
+
+  -- set_overrun_and_retfie: set the overrun flag and exit ISR (drop the byte).
+  let n_set_overrun : Node := .proc #[] #[]
+    (.intrinsic
+      #["    setf    _rx_overrun, c",
+        "    retfie  0"]
+      #[] #[h_rx_overrun]
+      #["set overrun flag; drop received byte; exit ISR"]) "set_overrun"
+  let h_set_overrun := hashNode n_set_overrun
+
+  -- do_push: write WREG (received byte) to buf[tail] via FSR0 indirect; advance tail.
+  -- WREG must hold the received byte on entry (loaded by the preceding read_rcreg).
+  let n_do_push : Node := .proc #[] #[]
+    (.intrinsic
+      #["    movlb   _rx_data >> 8",
+        "    movlw   _rx_data & 0xff",
+        "    addwf   _rx_tail, w, c",
+        "    movwf   FSR0L, c",
+        "    clrf    FSR0H, c",
+        "    movwf   INDF0",
+        "    incf    _rx_tail, f, c",
+        "    movlw   0x1f",
+        "    andwf   _rx_tail, f, c"]
+      #[h_rx_tail, h_rx_data] #[h_rx_tail]
+      #["push WREG to buf[tail]; advance tail mod 32"]) "do_push"
+  let h_do_push := hashNode n_do_push
+
+  -- if_full: if full { set_overrun + retfie } else { push }
+  let n_if_full : Node := .proc #[] #[]
+    (.cond h_test_is_full h_set_overrun h_do_push) "if_full"
+  let h_if_full := hashNode n_if_full
+
+  -- -------------------------------------------------------------------------
+  -- Top-level ISR body
+  -- -------------------------------------------------------------------------
+  let n_isr : Node := .proc #[] #[]
+    (.seq #[h_if_oerr, h_if_ferr, h_read_rcreg, h_if_full]) "uart_rx_isr"
+  let h_isr := hashNode n_isr
+
+  -- -------------------------------------------------------------------------
+  -- Store
+  -- -------------------------------------------------------------------------
+  let s := Store.insert Store.empty h_RCSTA             n_RCSTA
+  let s := Store.insert s           h_RCREG             n_RCREG
+  let s := Store.insert s           h_OERR              n_OERR
+  let s := Store.insert s           h_FERR              n_FERR
+  let s := Store.insert s           h_rx_head           n_rx_head
+  let s := Store.insert s           h_rx_tail           n_rx_tail
+  let s := Store.insert s           h_rx_overrun        n_rx_overrun
+  let s := Store.insert s           h_rx_data           n_rx_data
+  let s := Store.insert s           h_bool_0            n_bool_0
+  let s := Store.insert s           h_bool_1            n_bool_1
+  let s := Store.insert s           h_bool_2            n_bool_2
+  let s := Store.insert s           h_nop               n_nop
+  let s := Store.insert s           h_panic             n_panic
+  let s := Store.insert s           h_early_retfie      n_early_retfie
+  let s := Store.insert s           h_read_rcreg        n_read_rcreg
+  let s := Store.insert s           h_test_oerr         n_test_oerr
+  let s := Store.insert s           h_if_oerr           n_if_oerr
+  let s := Store.insert s           h_test_ferr         n_test_ferr
+  let s := Store.insert s           h_discard_and_retfie n_discard_and_retfie
+  let s := Store.insert s           h_if_ferr           n_if_ferr
+  let s := Store.insert s           h_test_is_full      n_test_is_full
+  let s := Store.insert s           h_set_overrun       n_set_overrun
+  let s := Store.insert s           h_do_push           n_do_push
+  let s := Store.insert s           h_if_full           n_if_full
+  let s := Store.insert s           h_isr               n_isr
+  { name  := "Ex06: UART receive ISR  (PIC18, high-priority vec 1)",
+    store := s,
+    ivt   := #[(1, h_isr)] }
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
 def main : IO Unit := do
-  let examples := [ex01_copy, ex02_add, ex03_cond, ex04_loop, ex05_two_vec]
+  let examples := [ex01_copy, ex02_add, ex03_cond, ex04_loop, ex05_two_vec,
+                   ex06_uart_rx]
   for ex in examples do
     runExample ex
     IO.println ""
