@@ -93,6 +93,10 @@ inductive Insn where
   | global (name : String)          --     GLOBAL name
   | nop                             --     NOP
   | comment (text : String)         -- ; text
+  /-- Raw assembly line emitted verbatim. Used for intrinsic instruction bodies.
+      The agent is responsible for correctness of the text.
+      Symbols must use the hashLabel format (_n<hash>) to match emitter EQUs. -/
+  | raw     (text : String)
   deriving Repr
 
 -- ---------------------------------------------------------------------------
@@ -147,8 +151,7 @@ private def markVisited (h : Hash) : Emit Unit :=
 private def wasVisited (h : Hash) : Emit Bool := do
   return (← get).visited.contains h
 
--- Derive an XC8-safe label from a hash (prefix avoids leading digit).
-private def hashLabel (h : Hash) : String := s!"_n{h}"
+-- hashLabel is defined in AIL.Core.Hash (public); used here and in node constructors.
 
 -- ---------------------------------------------------------------------------
 -- Data / peripheral node helpers
@@ -318,13 +321,13 @@ private def emitOp (ref : OpRef) (reads writes : Array Hash) : Emit Unit := do
   | .intrinsic ih =>
       -- Inline an intrinsic proc's instruction sequence.
       -- The hash must point to a Node.proc with ProcBody.intrinsic body.
-      -- TODO: once instructions : Array String becomes instructions : Array Insn,
-      --       emit typed instructions directly instead of comment placeholders.
+      -- Obligations emitted as comments; instructions emitted verbatim via Insn.raw.
+      -- Symbol names in instruction strings must use hashLabel format (_n<hash>).
       match ← lookupNode ih with
       | Node.proc _ _ (ProcBody.intrinsic instructions _ _ obligations) label =>
           outComment s!" [intrinsic: {label}]"
           for obl in obligations do outComment s!"   obligation: {obl}"
-          for raw in instructions do out (.comment s!"   {raw}")
+          for insn in instructions do out (.raw insn)
       | _ => throw s!"emitter: OpRef.intrinsic {ih} does not name a proc with intrinsic body"
 
 -- ---------------------------------------------------------------------------
@@ -425,10 +428,10 @@ partial def emitProcBody (params : Array Hash) (body : ProcBody) : Emit Unit := 
         emitSubroutine callee
 
   | ProcBody.intrinsic instructions _ _ obligations =>
-      -- Emit raw instruction strings as comments (placeholder until typed Insn).
+      -- Obligations emitted as comments; instructions emitted verbatim via Insn.raw.
       outComment " [intrinsic]"
       for obl in obligations do outComment s!"   obligation: {obl}"
-      for raw in instructions do out (.comment s!"   {raw}")
+      for insn in instructions do out (.raw insn)
 
 -- Emit `h` as a labeled subroutine (label at top, RETURN at bottom).
 -- Guards against re-emission via the visited set.
@@ -495,6 +498,7 @@ def renderInsn : Insn → String
   | .global name  => s!"    global  {name}"
   | .nop          => s!"    nop"
   | .comment t    => s!";{t}"
+  | .raw     t    => t
 
 -- ---------------------------------------------------------------------------
 -- Top-level entry point

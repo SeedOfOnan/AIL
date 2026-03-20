@@ -460,11 +460,13 @@ def ex06_uart_rx : Example :=
 
   -- test_is_full: (tail+1) & 0x1F == head → CPFSEQ skip if equal (full).
   -- Reads rx_buf_head and rx_buf_tail; produces a bool formal.
+  -- Symbol names use hashLabel format so they match the emitter's EQU declarations.
   let n_test_is_full : Node := .proc #[] #[h_bool_2]
     (.intrinsic
-      #["    incf    _rx_tail, w, c",
+      #[s!"    movf    {hashLabel h_rx_tail}, w, c",
+        "    addlw   1",
         "    andlw   0x1f",
-        "    cpfseq  _rx_head, c"]
+        s!"    cpfseq  {hashLabel h_rx_head}, c"]
       #[h_rx_head, h_rx_tail] #[]
       #["condition: (tail+1)&31 == head (buffer full)"]) "test_is_full"
   let h_test_is_full := hashNode n_test_is_full
@@ -472,7 +474,7 @@ def ex06_uart_rx : Example :=
   -- set_overrun_and_retfie: set the overrun flag and exit ISR (drop the byte).
   let n_set_overrun : Node := .proc #[] #[]
     (.intrinsic
-      #["    setf    _rx_overrun, c",
+      #[s!"    setf    {hashLabel h_rx_overrun}, c",
         "    retfie  0"]
       #[] #[h_rx_overrun]
       #["set overrun flag; drop received byte; exit ISR"]) "set_overrun"
@@ -490,9 +492,9 @@ def ex06_uart_rx : Example :=
   let h_push_store := hashNode n_push_store
   let n_advance_tail : Node := .proc #[] #[]
     (.intrinsic
-      #["    incf    _rx_tail, f, c",
+      #[s!"    incf    {hashLabel h_rx_tail}, f, c",
         "    movlw   0x1f",
-        "    andwf   _rx_tail, f, c"]
+        s!"    andwf   {hashLabel h_rx_tail}, f, c"]
       #[h_rx_tail] #[h_rx_tail]
       #["advance tail mod 32"]) "advance_tail"
   let h_advance_tail := hashNode n_advance_tail
@@ -548,12 +550,62 @@ def ex06_uart_rx : Example :=
     ivt   := #[(1, h_isr)] }
 
 -- ---------------------------------------------------------------------------
+-- Ex08: makeRingBuf library exercise
+--
+-- Builds a 32-byte ring buffer via makeRingBuf, then constructs a minimal
+-- ISR-style entry that: tests is_full, if full sets an overrun flag and
+-- returns, else calls push.
+--
+-- headAddr=0x10, tailAddr=0x11, dataAddr=0x12–0x31, tempAddr=0x32.
+-- overrunAddr=0x33.
+-- boolUid=10 (arbitrary, must be unique in this store).
+--
+-- Expected: checkStore PASS, compile PASS, assembly includes push intrinsic
+-- (movwf temp, lfsr 0, data, ..., andwf tail).
+-- ---------------------------------------------------------------------------
+
+def ex08_ringbuf : Example :=
+  let rb := makeRingBuf 0x10 0x11 0x12 0x32 32 10 "rb"
+  -- Overrun flag
+  let n_overrun : Node := .data .data .w8 0x33 "rb_overrun"
+  let h_overrun := hashNode n_overrun
+  -- Bool formal for the if_full cond (uid 11, distinct from rb's uid 10)
+  -- (rb.h_is_full already has a bool formal in its rets; the cond node wraps it)
+  -- set_overrun: setf overrun  (just use an intrinsic since no abstract setf)
+  let n_set_overrun : Node := .proc #[] #[]
+    (.intrinsic
+      #[s!"    setf    {hashLabel h_overrun}, c"]
+      #[] #[h_overrun]
+      #["mark buffer overrun"])
+    "rb_set_overrun"
+  let h_set_overrun := hashNode n_set_overrun
+  -- nop: else branch when not full
+  let n_nop : Node := .proc #[] #[] (.seq #[]) "nop"
+  let h_nop := hashNode n_nop
+  -- if_full: cond (is_full) (set_overrun) (push)
+  let n_if_full : Node := .proc #[] #[]
+    (.cond rb.h_is_full h_set_overrun rb.h_push) "rb_if_full"
+  let h_if_full := hashNode n_if_full
+  -- entry: seq [if_full]
+  let n_entry : Node := .proc #[] #[] (.seq #[h_if_full]) "rb_entry"
+  let h_entry := hashNode n_entry
+  -- Merge rb.nodes with the extra nodes
+  let s := rb.nodes.foldl (fun acc (h, n) => Store.insert acc h n) Store.empty
+  let s := Store.insert s h_overrun    n_overrun
+  let s := Store.insert s h_set_overrun n_set_overrun
+  let s := Store.insert s h_nop        n_nop
+  let s := Store.insert s h_if_full    n_if_full
+  let s := Store.insert s h_entry      n_entry
+  { name := "Ex08: makeRingBuf  (32-byte ring buffer library)", store := s,
+    ivt  := #[(0, h_entry)] }
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
 def main : IO Unit := do
   let examples := [ex01_copy, ex02_add, ex03_cond, ex04_loop, ex05_two_vec,
-                   ex07_index_copy, ex06_uart_rx]
+                   ex07_index_copy, ex06_uart_rx, ex08_ringbuf]
   for ex in examples do
     runExample ex
     IO.println ""

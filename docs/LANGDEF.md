@@ -252,4 +252,22 @@ impl RingBuf[T, N] {
 **Power-of-2 constraint:** enforced by a compile-time assertion in the
 type definition, not by the language.
 
+**Current AST-direct implementation:** `AIL/Lib/RingBuf.lean` provides
+`makeRingBuf`, which constructs all Store nodes for a ring buffer without
+surface-syntax support. Agents building programs before the surface language
+exists use `makeRingBuf` directly:
+
+```lean
+let rb := makeRingBuf headAddr tailAddr dataAddr tempAddr capacity boolUid pfx
+-- rb.h_is_full : Hash  -- proc [] [Bool], intrinsic, tests (tail+1)&mask==head
+-- rb.h_push    : Hash  -- proc [] [],     intrinsic, writes WREG to buf[tail]
+-- rb.nodes     : Store -- all backing nodes; merge into the program store
+```
+
+The push intrinsic saves WREG to a scratch byte (`tempAddr`) before setting
+up FSR0, so the received byte is not clobbered by the tail-index load.
+
+**User-defined parameterized types** (issue AIL#5) are the surface-language
+mechanism that will replace this AST-direct pattern.
+
 ---

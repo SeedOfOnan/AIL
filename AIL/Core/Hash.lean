@@ -141,4 +141,9 @@ def nodeBytes : Node → ByteArray
 /-- Content hash of a Node. -/
 def hashNode (n : Node) : Hash := hashBytes (nodeBytes n)
 
+/-- Derive an XC8-safe assembly symbol from a node hash.
+    Used in both the emitter (EQU declarations) and by node constructors
+    that embed symbol references in intrinsic instruction strings. -/
+def hashLabel (h : Hash) : String := s!"_n{h}"
+
 end AIL
