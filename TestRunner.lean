@@ -600,12 +600,279 @@ def ex08_ringbuf : Example :=
     ivt  := #[(0, h_entry)] }
 
 -- ---------------------------------------------------------------------------
+-- Ex09: Main loop — getch from ring buffer into line buffer until '\n'
+--
+-- Surfaces design gaps by doing real work:
+--
+--   DESIGN GAP A — FSR0 resource conflict (AIL#13)
+--     pop (main) and push (ISR) both use FSR0.  If the high-priority ISR
+--     fires while main is between LFSR 0 and MOVF INDF0, FSR0 is clobbered.
+--     Fix requires: (a) BCF/BSF INTCON.GIE critical section (AIL#14), or
+--     (b) FSR resource annotation in the type system so the compiler can
+--     detect conflicting uses at build time (AIL#13).
+--
+--   DESIGN GAP B — Blocking spin / while-loop (AIL#15)
+--     getch needs "spin while is_empty".  ProcBody.forever has no exit;
+--     ProcBody.whileLoop (loop-with-condition) does not yet exist.
+--     Workaround: getch_spin is a ProcBody.intrinsic with local assembly
+--     labels (_getch_spin / _getch_done) that jumps back or falls through.
+--     TODO: once ProcBody.whileLoop exists, replace getch_spin with a typed node.
+--
+--   DESIGN GAP C — Literal-operand instructions (AIL#12)
+--     '\n' detection uses xorlw 0x0A — no AbstractOp covers literal operands
+--     (xorImm, addImm, andImm, etc.).  Workaround: ProcBody.intrinsic.
+--     The rest of the newline test (load getch_result, btfss STATUS,Z) uses
+--     typed abstract ops, so only the xorlw step is an intrinsic.
+--
+-- Memory map:
+--   0x20        rx_head
+--   0x21        rx_tail
+--   0x22        rx_temp   (push scratch byte, allocated by makeRingBuf)
+--   0x23–0x42   rx_data   (32-byte ring buffer body)
+--   0x43        rx_overrun (set by ISR when ring buffer is full)
+--   0x44        getch_result (staging byte for fetched character)
+--   0x45        line_len
+--   0x46–0x85   line_buf  (64-byte line accumulation buffer)
+--
+-- IVT: vec 0 = main (the forever loop).
+-- The ISR (vec 1) is not included here — see Ex06 for the ISR design.
+-- In a real program the two stores would be merged.
+-- ---------------------------------------------------------------------------
+
+def ex09_main_loop : Example :=
+  -- -------------------------------------------------------------------------
+  -- Ring buffer (shared between ISR push and main pop)
+  -- -------------------------------------------------------------------------
+  let rb := makeRingBuf 0x20 0x21 0x23 0x22 32 100 "rx"
+
+  -- -------------------------------------------------------------------------
+  -- STATUS register and Z flag (needed for xorlw-based newline test)
+  -- -------------------------------------------------------------------------
+  let sem_status : AccessSemantics :=
+    { readable := true, writable := true,
+      sideEffectOnRead := false, sideEffectOnWrite := false, accessWidth := .w8 }
+  let n_STATUS : Node := .peripheral .sfr 0xFD8 sem_status "STATUS"
+  let h_STATUS := hashNode n_STATUS
+  -- Z flag: STATUS bit 2 (PIC18 STATUS register, DS40002329F §3.2.1)
+  let n_Z : Node := .bitField h_STATUS 2 "Z"
+  let h_Z := hashNode n_Z
+
+  -- -------------------------------------------------------------------------
+  -- Application state nodes
+  -- -------------------------------------------------------------------------
+  let n_getch_result : Node := .data .data .w8 0x44 "getch_result"
+  let h_getch_result := hashNode n_getch_result
+  let n_line_len     : Node := .data .data .w8 0x45 "line_len"
+  let h_line_len     := hashNode n_line_len
+  let n_line_buf     : Node := .staticArray .data .w8 0x46 64 "line_buf"
+  let h_line_buf     := hashNode n_line_buf
+
+  -- -------------------------------------------------------------------------
+  -- Bool formals
+  -- -------------------------------------------------------------------------
+  -- uid 101: for is_empty rets
+  -- uid 102: for test_is_newline rets (Z flag)
+  let n_bool_empty : Node := .formal 101 .bool
+  let h_bool_empty := hashNode n_bool_empty
+  let n_bool_nl    : Node := .formal 102 .bool
+  let h_bool_nl    := hashNode n_bool_nl
+
+  -- -------------------------------------------------------------------------
+  -- is_empty: head == tail (buffer is empty)
+  -- cpfseq: skip if f == WREG.  Load tail into WREG; cpfseq head skips when
+  -- head == tail (empty).  In the cond skip-protocol: skip = condition TRUE =
+  -- buffer IS empty (keep spinning in getch_spin).
+  -- -------------------------------------------------------------------------
+  let n_is_empty : Node := .proc #[] #[h_bool_empty]
+    (.intrinsic
+      #[s!"    movf    {hashLabel rb.h_tail}, w, c",
+        s!"    cpfseq  {hashLabel rb.h_head}, c"]
+      #[rb.h_head, rb.h_tail] #[]
+      #["condition: head == tail (buffer empty)"])
+    "rx_is_empty"
+  let h_is_empty := hashNode n_is_empty
+
+  -- -------------------------------------------------------------------------
+  -- getch_spin: spin until non-empty, then fall through.
+  --
+  -- DESIGN GAP B: this must be ProcBody.intrinsic because AIL has no
+  -- ProcBody.whileLoop.  The assembly uses two local labels: _getch_spin
+  -- and _getch_done.  These are unique here because getch_spin is inlined
+  -- exactly once (as a step of getch's seq body).
+  --
+  -- When ProcBody.whileLoop exists, this node is replaced by:
+  --   ProcBody.whileLoop (cond := h_is_empty) (body := h_nop)
+  -- and getch becomes seq [whileLoop h_is_empty h_nop, h_pop].
+  -- -------------------------------------------------------------------------
+  let n_getch_spin : Node := .proc #[] #[]
+    (.intrinsic
+      #["_getch_spin:",
+        s!"    movf    {hashLabel rb.h_tail}, w, c",
+        s!"    cpfseq  {hashLabel rb.h_head}, c",
+        "    goto    _getch_done",
+        "    goto    _getch_spin",
+        "_getch_done:"]
+      #[rb.h_head, rb.h_tail] #[]
+      #["spin until ring buffer non-empty; fall through when head != tail",
+        "TODO: replace with ProcBody.whileLoop once AIL#15 is implemented"])
+    "getch_spin"
+  let h_getch_spin := hashNode n_getch_spin
+
+  -- -------------------------------------------------------------------------
+  -- pop: read buf[head] → getch_result, advance head mod 32.
+  --
+  -- DESIGN GAP A: uses FSR0 — same FSR as ISR push (makeRingBuf).
+  -- No critical section: if the high-priority ISR fires between the LFSR
+  -- and the MOVF INDF0, FSR0 is clobbered and getch_result gets the wrong byte.
+  -- Fix requires BCF INTCON,GIE (AIL#14) and/or FSR annotation (AIL#13).
+  -- -------------------------------------------------------------------------
+  let n_pop : Node := .proc #[] #[h_getch_result]
+    (.intrinsic
+      #[s!"    lfsr    0, {hashLabel rb.h_data}",
+        s!"    movf    {hashLabel rb.h_head}, w, c",
+        "    addwf   FSR0L, f, c",
+        "    movf    INDF0, w, c",
+        s!"    movwf   {hashLabel h_getch_result}, c",
+        s!"    incf    {hashLabel rb.h_head}, f, c",
+        "    movlw   31",
+        s!"    andwf   {hashLabel rb.h_head}, f, c"]
+      #[rb.h_data, rb.h_head] #[rb.h_head, h_getch_result]
+      #["pop buf[head] → getch_result; advance head mod 32",
+        "DESIGN GAP A: uses FSR0 — conflicts with ISR push (AIL#13, AIL#14)"])
+    "rx_pop"
+  let h_pop := hashNode n_pop
+
+  -- -------------------------------------------------------------------------
+  -- getch: spin until non-empty, then pop.  seq [getch_spin, pop].
+  -- Separates the spin concern from the pop concern at the typed-node level,
+  -- even though both are currently intrinsics.
+  -- -------------------------------------------------------------------------
+  let n_getch : Node := .proc #[] #[h_getch_result]
+    (.seq #[h_getch_spin, h_pop]) "getch"
+  let h_getch := hashNode n_getch
+
+  -- -------------------------------------------------------------------------
+  -- test_is_newline: getch_result == '\n' (0x0A)?
+  --
+  -- Three-step seq:
+  --   1. load getch_result → WREG              (AbstractOp.load)
+  --   2. xorlw 0x0A                            (intrinsic — DESIGN GAP C, AIL#12)
+  --   3. btfss STATUS, Z                       (AbstractOp.testBit on n_Z)
+  --
+  -- After xorlw: if WREG was 0x0A, WREG = 0 and Z = 1.
+  -- btfss STATUS,2 skips when Z=1 (condition TRUE = is newline).
+  -- In the cond protocol: skip = condition TRUE = byte is '\n'.
+  -- -------------------------------------------------------------------------
+  let n_load_gc : Node := .proc #[h_getch_result] #[]
+    (.atomic (.abstract .load) #[h_getch_result] #[]) "load_getch_result"
+  let h_load_gc := hashNode n_load_gc
+
+  let n_xor_nl : Node := .proc #[] #[]
+    (.intrinsic
+      #["    xorlw   0x0a"]
+      #[] #[]
+      #["WREG ^= '\\n' (0x0A); Z flag set iff byte was '\\n'",
+        "DESIGN GAP C: no AbstractOp for literal-operand instructions (AIL#12)"])
+    "xor_newline"
+  let h_xor_nl := hashNode n_xor_nl
+
+  let n_test_z : Node := .proc #[] #[h_bool_nl]
+    (.atomic (.abstract .testBit) #[h_Z] #[]) "test_Z_flag"
+  let h_test_z := hashNode n_test_z
+
+  let n_test_nl : Node := .proc #[] #[h_bool_nl]
+    (.seq #[h_load_gc, h_xor_nl, h_test_z]) "test_is_newline"
+  let h_test_nl := hashNode n_test_nl
+
+  -- -------------------------------------------------------------------------
+  -- append_line: write getch_result to line_buf[line_len]; line_len++.
+  -- Uses FSR1 (not FSR0) — demonstrates multi-FSR usage.
+  -- FSR annotations (AIL#13) would declare FSR0 → getch/pop, FSR1 → append_line,
+  -- making the non-conflict between these two explicit and checkable.
+  -- -------------------------------------------------------------------------
+  let n_append_line : Node := .proc #[] #[]
+    (.intrinsic
+      #[s!"    lfsr    1, {hashLabel h_line_buf}",
+        s!"    movf    {hashLabel h_line_len}, w, c",
+        "    addwf   FSR1L, f, c",
+        s!"    movf    {hashLabel h_getch_result}, w, c",
+        "    movwf   INDF1, c",
+        s!"    incf    {hashLabel h_line_len}, f, c"]
+      #[h_line_buf, h_line_len, h_getch_result] #[h_line_len]
+      #["line_buf[line_len] = getch_result; line_len++",
+        "uses FSR1 (distinct from FSR0 used by pop/getch for ring buffer)"])
+    "append_line"
+  let h_append_line := hashNode n_append_line
+
+  -- -------------------------------------------------------------------------
+  -- process_line: consume the accumulated line (stub).
+  -- TODO: implement command dispatch, echo, etc.
+  -- -------------------------------------------------------------------------
+  let n_process_line : Node := .proc #[] #[]
+    (.intrinsic
+      #[s!"    clrf    {hashLabel h_line_len}, c"]
+      #[] #[h_line_len]
+      #["stub: clear line buffer; TODO: implement line processing"])
+    "process_line"
+  let h_process_line := hashNode n_process_line
+
+  -- -------------------------------------------------------------------------
+  -- if_newline: if getch_result == '\n' → process_line else → append_line
+  -- -------------------------------------------------------------------------
+  let n_if_nl : Node := .proc #[] #[]
+    (.cond h_test_nl h_process_line h_append_line) "if_newline"
+  let h_if_nl := hashNode n_if_nl
+
+  -- -------------------------------------------------------------------------
+  -- main_body: one iteration of the main loop — fetch one byte, dispatch.
+  -- -------------------------------------------------------------------------
+  let n_main_body : Node := .proc #[] #[]
+    (.seq #[h_getch, h_if_nl]) "main_body"
+  let h_main_body := hashNode n_main_body
+
+  -- -------------------------------------------------------------------------
+  -- main: the reset entry point — run main_body forever.
+  -- ProcBody.forever replaces the "infinite bra $ loop" idiom with a typed node.
+  -- -------------------------------------------------------------------------
+  let n_main : Node := .proc #[] #[]
+    (.forever h_main_body) "main"
+  let h_main := hashNode n_main
+
+  -- -------------------------------------------------------------------------
+  -- Store
+  -- -------------------------------------------------------------------------
+  let s := rb.nodes.foldl (fun acc (h, n) => Store.insert acc h n) Store.empty
+  let s := Store.insert s h_STATUS       n_STATUS
+  let s := Store.insert s h_Z            n_Z
+  let s := Store.insert s h_getch_result n_getch_result
+  let s := Store.insert s h_line_len     n_line_len
+  let s := Store.insert s h_line_buf     n_line_buf
+  let s := Store.insert s h_bool_empty   n_bool_empty
+  let s := Store.insert s h_bool_nl      n_bool_nl
+  let s := Store.insert s h_is_empty     n_is_empty
+  let s := Store.insert s h_getch_spin   n_getch_spin
+  let s := Store.insert s h_pop          n_pop
+  let s := Store.insert s h_getch        n_getch
+  let s := Store.insert s h_load_gc      n_load_gc
+  let s := Store.insert s h_xor_nl       n_xor_nl
+  let s := Store.insert s h_test_z       n_test_z
+  let s := Store.insert s h_test_nl      n_test_nl
+  let s := Store.insert s h_append_line  n_append_line
+  let s := Store.insert s h_process_line n_process_line
+  let s := Store.insert s h_if_nl        n_if_nl
+  let s := Store.insert s h_main_body    n_main_body
+  let s := Store.insert s h_main         n_main
+  { name := "Ex09: Main loop  (getch ring-buf → line buffer until '\\n')",
+    store := s,
+    ivt   := #[(0, h_main)] }
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
 def main : IO Unit := do
   let examples := [ex01_copy, ex02_add, ex03_cond, ex04_loop, ex05_two_vec,
-                   ex07_index_copy, ex06_uart_rx, ex08_ringbuf]
+                   ex07_index_copy, ex06_uart_rx, ex08_ringbuf, ex09_main_loop]
   for ex in examples do
     runExample ex
     IO.println ""

@@ -115,6 +115,13 @@ inductive ProcBodyOk (cfg : TargetConfig) (env : TyEnv) :
       (hbody  : env body = some (Ty.proc paramTys retTys d)) :
       ProcBodyOk cfg env (ProcBody.loop body) paramTys retTys d
 
+  /-- forever: body must resolve to a proc type. No exit condition. -/
+  | forever_ok
+      (body : Hash)
+      (paramTys retTys : List Ty) (d : Nat)
+      (hbody : env body = some (Ty.proc paramTys retTys d)) :
+      ProcBodyOk cfg env (ProcBody.forever body) paramTys retTys d
+
   /-- call: args type-match callee params; retBinds type-match callee rets.
       Stack safety: callDepth + 1 + callee.maxBodyDepth ≤ maxCallDepth. -/
   | call_ok
@@ -202,6 +209,11 @@ def inferBodyDepth (cfg : TargetConfig) (env : TyEnv) (b : ProcBody) : Option Na
       | _, _ => none
 
   | ProcBody.loop body => do
+      match ← env body with
+      | Ty.proc _ _ d => some d
+      | _             => none
+
+  | ProcBody.forever body => do
       match ← env body with
       | Ty.proc _ _ d => some d
       | _             => none

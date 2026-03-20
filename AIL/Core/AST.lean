@@ -147,6 +147,17 @@ inductive ProcBody where
   | loop
       (body : Hash)
 
+  /-- forever: unconditional infinite loop.
+      body is a hash of a proc executed each iteration.
+      Used for: main entry-point event loops, task loops, spin-wait stubs.
+      There is no break or early-exit mechanism — the body runs forever.
+      TODO: add ProcBody.whileLoop (body : Hash) (cond : Hash) for loops that
+            can exit; forever is just the degenerate case (always-true condition).
+            Without whileLoop, blocking patterns (e.g. getch spin-wait) must
+            use ProcBody.intrinsic as a workaround. -/
+  | forever
+      (body : Hash)
+
   /-- call: invoke a proc at this call site, with explicit argument binding.
       callee   is a hash of a proc node.
       args[i]  is the hash of the actual node bound to callee.params[i].

@@ -414,6 +414,16 @@ partial def emitProcBody (params : Array Hash) (body : ProcBody) : Emit Unit := 
       out (.decfsz addr .f)    -- decrement; skip BRA when bound reaches 0
       out (.bra lblTop)
 
+  | ProcBody.forever body =>
+      -- Unconditional infinite loop.
+      -- Emits: top_label: <body inlined>; goto top_label
+      -- Body is inlined (not called as a subroutine) to avoid CALL overhead on
+      -- the hot path. Use ProcBody.call inside a forever body for subroutine calls.
+      let lblTop ← freshLabel "forever"
+      out (.lbl lblTop)
+      emitNode body
+      out (.goto_ lblTop)
+
   | ProcBody.call callee _args _retBinds callDepth =>
       -- Emit a CALL to the callee subroutine.
       -- args/retBinds are type-checked by checkStore. At this point the emitter
@@ -548,11 +558,16 @@ def compile (store : Store) (tyEnv : TyEnv) (ivt : Array IVTEntry)
         out (.lbl s!"_ail_vec{vec}")
         out (.lbl (hashLabel h))
         emitNode h
-        -- Suppress trailing RETURN for procs that never return (Ty.never).
-        let doesNotReturn := match (← get).tyEnv h with
+        -- Suppress trailing RETURN if the proc never returns.
+        -- Two cases: explicit Ty.never return type, or a ProcBody.forever body
+        -- (which loops unconditionally; its trailing RETURN would be dead code).
+        let isForever := match (← get).store.lookup h with
+          | some (Node.proc _ _ (ProcBody.forever _) _) => true
+          | _                                            => false
+        let isNever := match (← get).tyEnv h with
           | some (Ty.proc _ [Ty.never] _) => true
           | _                              => false
-        if !doesNotReturn then out .return_
+        if !(isForever || isNever) then out .return_
   let (_, final) ← emitIVT.run initState
   -- Data section: EQU declarations collected during the emit pass.
   -- These must precede the code section so forward references resolve.
