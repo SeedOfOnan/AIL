@@ -28,6 +28,10 @@ inductive Ty : Type where
   | periph (space : AddrSpace) (sem   : AccessSemantics) : Ty
   | bool   : Ty
   | unit   : Ty
+  /-- A statically-allocated fixed-size array.
+      elemWidth: element size. count: number of elements.
+      Accessed via AbstractOp.indexLoad / indexStore (PIC18: FSR indirect). -/
+  | array (elemWidth : Width) (count : UInt32) : Ty
   /-- never: the bottom type. A proc returning Never does not return.
       The compiler must not emit code after a call to such a proc.
       Satisfies any return type context (bottom of the subtype lattice).
@@ -151,6 +155,10 @@ inductive HasType (cfg : TargetConfig) (env : TyEnv) : Node → Ty → Prop wher
   | formal_ok (uid : UInt64) (kind : FormalKind) :
       HasType cfg env (Node.formal uid kind) (formalTy kind)
 
+  | staticArray_ok (space : AddrSpace) (w : Width) (addr : UInt32)
+                   (count : UInt32) (label : String) :
+      HasType cfg env (Node.staticArray space w addr count label) (Ty.array w count)
+
   | bitField_ok (register : Hash) (bitPos : UInt8) (label : String) :
       HasType cfg env (Node.bitField register bitPos label) Ty.bool
 
@@ -216,10 +224,11 @@ def inferBodyDepth (cfg : TargetConfig) (env : TyEnv) (b : ProcBody) : Option Na
 
 def inferTy (cfg : TargetConfig) (env : TyEnv) (n : Node) : Option Ty :=
   match n with
-  | Node.data space w _ _          => some (Ty.data space w)
-  | Node.peripheral space _ sem _  => some (Ty.periph space sem)
-  | Node.formal _ kind             => some (formalTy kind)
-  | Node.bitField _ _ _            => some Ty.bool
+  | Node.data space w _ _              => some (Ty.data space w)
+  | Node.peripheral space _ sem _      => some (Ty.periph space sem)
+  | Node.formal _ kind                 => some (formalTy kind)
+  | Node.staticArray _ w _ count _     => some (Ty.array w count)
+  | Node.bitField _ _ _                => some Ty.bool
   | Node.proc params rets body _ => do
       let paramTys ← resolveAll env params
       let retTys   ← resolveAll env rets

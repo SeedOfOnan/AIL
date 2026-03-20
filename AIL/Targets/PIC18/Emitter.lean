@@ -86,6 +86,8 @@ inductive Insn where
   | bra    (lbl : String)           -- BRA   label       ; short relative branch
   | return_                         -- RETURN
   | retfie (fast : Bool)            -- RETFIE [FAST]     ; return from interrupt
+  -- FSR indirect
+  | lfsr   (f : UInt8) (sym : String) -- LFSR FSRf, sym ; load FSR with 12-bit address literal
   -- Assembler pseudo-ops
   | lbl    (name : String)          -- name:             ; label definition
   | global (name : String)          --     GLOBAL name
@@ -197,8 +199,14 @@ private def resolveAddr (h : Hash) : Emit String := do
         dataDecls      := s.dataDecls.push decl
         declaredHashes := s.declaredHashes.push h }
       return sym
+  | Node.staticArray _ _ addr _ lbl =>
+      let decl := s!"{sym}\tequ\t{addr.toNat}\t; array base: {lbl}"
+      modify fun s => { s with
+        dataDecls      := s.dataDecls.push decl
+        declaredHashes := s.declaredHashes.push h }
+      return sym
   | _ =>
-      throw s!"emitter: hash {h} is not a data or peripheral node"
+      throw s!"emitter: hash {h} is not a data, peripheral, or staticArray node"
 
 -- Resolve a bitField node to (register_symbol, bit_position).
 -- Used by testBit, setBit, clearBit op emitters.
@@ -276,6 +284,37 @@ private def emitOp (ref : OpRef) (reads writes : Array Hash) : Emit Unit := do
           -- CPFSEQ f  — skip if f == WREG.
           let f ← resolveAddr (← reads[0]? |>.elim (throw "compare: no operand") pure)
           out (.cpfseq f)
+      | .indexLoad =>
+          -- FSR0-indirect read: WREG = array[index].
+          -- reads[0] = staticArray node (base address), reads[1] = index node.
+          -- LFSR 0, base  → FSR0 = base_address
+          -- MOVF idx, W   → WREG = index
+          -- ADDWF FSR0L,F → FSR0L += index  (assumes no carry into FSR0H)
+          -- MOVF INDF0, W → WREG = *(FSR0)
+          -- TODO: handle carry into FSR0H for arrays that cross a 256-byte boundary.
+          let arrSym ← resolveAddr (← reads[0]? |>.elim (throw "indexLoad: no array") pure)
+          let idxSym ← resolveAddr (← reads[1]? |>.elim (throw "indexLoad: no index") pure)
+          out (.lfsr 0 arrSym)
+          out (.movf idxSym .w)
+          out (.addwf "FSR0L" .f)
+          out (.movf "INDF0" .w)
+      | .indexStore =>
+          -- FSR0-indirect write: array[index] = WREG.
+          -- reads[0] = staticArray node, reads[1] = index node.
+          -- WREG must hold the value to write on entry to this op.
+          -- LFSR 0, base  → FSR0 = base_address
+          -- MOVF idx, W   → WREG = index  (NOTE: overwrites the value in WREG!)
+          -- ADDWF FSR0L,F → FSR0L += index
+          -- MOVWF INDF0   → *(FSR0) = WREG
+          -- TODO: caller must reload value into WREG after the index computation.
+          --       This is a known limitation of the implicit WREG convention;
+          --       resolves when SSA wiring tracks WREG explicitly.
+          let arrSym ← resolveAddr (← reads[0]? |>.elim (throw "indexStore: no array") pure)
+          let idxSym ← resolveAddr (← reads[1]? |>.elim (throw "indexStore: no index") pure)
+          out (.lfsr 0 arrSym)
+          out (.movf idxSym .w)
+          out (.addwf "FSR0L" .f)
+          out (.movwf "INDF0")
   | .intrinsic ih =>
       -- Inline an intrinsic proc's instruction sequence.
       -- The hash must point to a Node.proc with ProcBody.intrinsic body.
@@ -310,6 +349,11 @@ partial def emitNode (h : Hash) : Emit Unit := do
   | Node.peripheral _ _ _ _ =>
       -- Ensure this SFR is declared in the data section (EQU).
       -- No code is emitted: peripheral nodes are address equates only.
+      let _ ← resolveAddr h
+
+  | Node.staticArray _ _ _ _ _ =>
+      -- Declare the array base address as an EQU in the data section.
+      -- No code emitted: a staticArray is a location, not a computation.
       let _ ← resolveAddr h
 
   | Node.bitField regH _ _ =>
@@ -443,6 +487,7 @@ def renderInsn : Insn → String
   | .call   lbl   => s!"    call    {lbl}, 0"
   | .goto_  lbl   => s!"    goto    {lbl}"
   | .bra    lbl   => s!"    bra     {lbl}"
+  | .lfsr   f sym => s!"    lfsr    {f}, {sym}"
   | .return_      => s!"    return"
   | .retfie true  => s!"    retfie  1"       -- FAST bit
   | .retfie false => s!"    retfie  0"

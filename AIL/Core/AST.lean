@@ -85,10 +85,12 @@ inductive AbstractOp where
   | testBit    -- read a bitField node; emits BTFSS (skip if set — condition true)
   | setBit     -- write 1 to a bitField node; emits BSF
   | clearBit   -- write 0 to a bitField node; emits BCF
-  | load       -- read a location into WREG; WARN if source is read_clears and result unused
+  | load        -- read a location into WREG; WARN if source is read_clears and result unused
   | loadDiscard -- read a read_clears location, explicitly discarding the result; no warning
   | store
   | compare
+  | indexLoad   -- reads[0]=staticArray, reads[1]=index → WREG = array[index]; emits FSR+INDF
+  | indexStore  -- reads[0]=staticArray, reads[1]=index; WREG=value → array[index]=WREG
 deriving Repr, BEq, DecidableEq
 
 /-- Operation reference: abstract core op or a user-defined intrinsic (by hash). -/
@@ -216,6 +218,18 @@ inductive Node where
   | formal
       (uid  : UInt64)
       (kind : FormalKind)
+
+  /-- staticArray: a contiguous block of fixed-size elements in RAM.
+      Allocated statically at a fixed base address; no heap.
+      count is the number of elements.
+      For indexed access on PIC18, count should be a power of 2 (wrap via AND).
+      label is metadata only; excluded from identity. -/
+  | staticArray
+      (elemSpace : AddrSpace)
+      (elemWidth : Width)
+      (address   : UInt32)
+      (count     : UInt32)
+      (label     : String)   -- excluded from identity
 
   /-- bitField: a single named bit within a peripheral register.
       register is the hash of the parent Node.peripheral.

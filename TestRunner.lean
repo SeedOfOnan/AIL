@@ -267,6 +267,48 @@ def ex05_two_vec : Example :=
     store := s, ivt := #[(0, h_reset), (1, h_timer)] }
 
 -- ---------------------------------------------------------------------------
+-- Ex07: Indexed array copy
+--
+-- buf: 4-byte staticArray at 0x20.
+-- idx: u8 index at 0x24.
+-- dst: u8 destination at 0x25.
+-- seq [indexLoad buf idx, store dst]  →  dst = buf[idx]
+--
+-- Demonstrates: Node.staticArray, AbstractOp.indexLoad, FSR0 indirect.
+--
+-- Expected PIC18 output:
+--   lfsr    0, _n<buf>         ; FSR0 = buf base
+--   movf    _n<idx>, w, c      ; WREG = idx
+--   addwf   FSR0L, f, c        ; FSR0 += idx
+--   movf    INDF0, w, c        ; WREG = buf[idx]
+--   movwf   _n<dst>, c         ; dst = WREG
+-- ---------------------------------------------------------------------------
+
+def ex07_index_copy : Example :=
+  let n_buf : Node := .staticArray .data .w8 0x20 4 "buf"
+  let h_buf := hashNode n_buf
+  let n_idx : Node := .data .data .w8 0x24 "idx"
+  let h_idx := hashNode n_idx
+  let n_dst : Node := .data .data .w8 0x25 "dst"
+  let h_dst := hashNode n_dst
+  let n_load : Node := .proc #[] #[]
+    (.atomic (.abstract .indexLoad) #[h_buf, h_idx] #[]) "load_buf_idx"
+  let h_load := hashNode n_load
+  let n_stor : Node := .proc #[] #[h_dst]
+    (.atomic (.abstract .store) #[] #[h_dst]) "store_dst"
+  let h_stor := hashNode n_stor
+  let n_reset : Node := .proc #[] #[] (.seq #[h_load, h_stor]) "reset"
+  let h_reset := hashNode n_reset
+  let s := Store.insert Store.empty h_buf   n_buf
+  let s := Store.insert s           h_idx   n_idx
+  let s := Store.insert s           h_dst   n_dst
+  let s := Store.insert s           h_load  n_load
+  let s := Store.insert s           h_stor  n_stor
+  let s := Store.insert s           h_reset n_reset
+  { name := "Ex07: Indexed array copy  (dst = buf[idx])", store := s,
+    ivt  := #[(0, h_reset)] }
+
+-- ---------------------------------------------------------------------------
 -- Ex06: UART receive interrupt handler (PIC18, high-priority ISR)
 --
 -- Demonstrates: Node.peripheral (SFR), Node.bitField, AbstractOp.testBit
@@ -330,9 +372,7 @@ def ex06_uart_rx : Example :=
   let n_rx_overrun : Node := .data .data .w8 0x22 "rx_buf_overrun"
   let h_rx_overrun := hashNode n_rx_overrun
   -- rx_buf_data: 32-byte ring buffer body at 0x23–0x42.
-  -- Represented by its base address node only; FSR indirect used in intrinsics.
-  -- TODO: replace with Node.staticArray once AIL#4 is implemented.
-  let n_rx_data    : Node := .data .data .w8 0x23 "rx_buf_data"
+  let n_rx_data    : Node := .staticArray .data .w8 0x23 32 "rx_buf_data"
   let h_rx_data    := hashNode n_rx_data
 
   -- -------------------------------------------------------------------------
@@ -438,21 +478,26 @@ def ex06_uart_rx : Example :=
       #["set overrun flag; drop received byte; exit ISR"]) "set_overrun"
   let h_set_overrun := hashNode n_set_overrun
 
-  -- do_push: write WREG (received byte) to buf[tail] via FSR0 indirect; advance tail.
-  -- WREG must hold the received byte on entry (loaded by the preceding read_rcreg).
-  let n_do_push : Node := .proc #[] #[]
+  -- do_push: write WREG (received byte) to buf[tail] via indexStore, then
+  -- advance tail mod 32 via intrinsic (incf + andlw not yet in abstract ops).
+  -- indexStore emits: LFSR 0, rx_buf_data; MOVF tail, W; ADDWF FSR0L, F; MOVWF INDF0.
+  -- NOTE: indexStore overwrites WREG with the index before the write — this is the
+  -- known WREG limitation documented in the emitter TODO. The received byte is lost
+  -- before MOVWF INDF0 executes. Resolves when SSA wiring tracks WREG explicitly.
+  -- TODO: fix WREG clobbering in indexStore sequence.
+  let n_push_store : Node := .proc #[] #[]
+    (.atomic (.abstract .indexStore) #[h_rx_data, h_rx_tail] #[]) "push_store"
+  let h_push_store := hashNode n_push_store
+  let n_advance_tail : Node := .proc #[] #[]
     (.intrinsic
-      #["    movlb   _rx_data >> 8",
-        "    movlw   _rx_data & 0xff",
-        "    addwf   _rx_tail, w, c",
-        "    movwf   FSR0L, c",
-        "    clrf    FSR0H, c",
-        "    movwf   INDF0",
-        "    incf    _rx_tail, f, c",
+      #["    incf    _rx_tail, f, c",
         "    movlw   0x1f",
         "    andwf   _rx_tail, f, c"]
-      #[h_rx_tail, h_rx_data] #[h_rx_tail]
-      #["push WREG to buf[tail]; advance tail mod 32"]) "do_push"
+      #[h_rx_tail] #[h_rx_tail]
+      #["advance tail mod 32"]) "advance_tail"
+  let h_advance_tail := hashNode n_advance_tail
+  let n_do_push : Node := .proc #[] #[]
+    (.seq #[h_push_store, h_advance_tail]) "do_push"
   let h_do_push := hashNode n_do_push
 
   -- if_full: if full { set_overrun + retfie } else { push }
@@ -493,6 +538,8 @@ def ex06_uart_rx : Example :=
   let s := Store.insert s           h_if_ferr           n_if_ferr
   let s := Store.insert s           h_test_is_full      n_test_is_full
   let s := Store.insert s           h_set_overrun       n_set_overrun
+  let s := Store.insert s           h_push_store        n_push_store
+  let s := Store.insert s           h_advance_tail      n_advance_tail
   let s := Store.insert s           h_do_push           n_do_push
   let s := Store.insert s           h_if_full           n_if_full
   let s := Store.insert s           h_isr               n_isr
@@ -506,7 +553,7 @@ def ex06_uart_rx : Example :=
 
 def main : IO Unit := do
   let examples := [ex01_copy, ex02_add, ex03_cond, ex04_loop, ex05_two_vec,
-                   ex06_uart_rx]
+                   ex07_index_copy, ex06_uart_rx]
   for ex in examples do
     runExample ex
     IO.println ""

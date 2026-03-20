@@ -76,7 +76,7 @@ private def serAbstractOp : AbstractOp → ByteArray
   | .not         => serU8  6  | .shiftL      => serU8  7  | .shiftR      => serU8  8
   | .testBit     => serU8  9  | .load        => serU8 10  | .store       => serU8 11
   | .compare     => serU8 12  | .setBit      => serU8 13  | .clearBit    => serU8 14
-  | .loadDiscard => serU8 15
+  | .loadDiscard => serU8 15  | .indexLoad   => serU8 16  | .indexStore  => serU8 17
 
 private def serOpRef : OpRef → ByteArray
   | .abstract op => serU8 0 ++ serAbstractOp op
@@ -124,6 +124,11 @@ def nodeBytes : Node → ByteArray
 
   | .formal uid kind =>
       serU8 0x03 ++ serU64 uid ++ serFormalKind kind
+
+  | .staticArray elemSpace elemWidth address count _label =>
+      -- label excluded from identity
+      serU8 0x06 ++ serAddrSpace elemSpace ++ serWidth elemWidth ++
+      serU32 address ++ serU32 count
 
   | .bitField register bitPos _label =>
       -- label excluded from identity
