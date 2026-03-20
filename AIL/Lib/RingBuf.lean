@@ -62,17 +62,27 @@ def makeRingBuf
   let h_bool := hashNode n_bool
   -- -------------------------------------------------------------------------
   -- is_full: (tail+1) & mask == head  →  CPFSEQ skips when buffer is full.
-  -- Intrinsic because addlw and andlw (literal-operand ops) are not yet
-  -- abstract ops.  Symbol names use hashLabel so they match emitted EQUs.
+  --
+  -- Four typed atomic steps:
+  --   1. MOVF tail, W   — load tail index into WREG  (AbstractOp.load)
+  --   2. ADDLW 1        — WREG += 1                  (AbstractOp.addImm 1)
+  --   3. ANDLW mask     — WREG &= mask               (AbstractOp.andImm mask)
+  --   4. CPFSEQ head    — skip if head == WREG (full) (AbstractOp.compare)
   -- -------------------------------------------------------------------------
+  let n_if_load_tail : Node := .proc #[h_tail] #[]
+    (.atomic (.abstract .load) #[h_tail] #[]) (pfx ++ "_if_load_tail")
+  let h_if_load_tail := hashNode n_if_load_tail
+  let n_if_add1 : Node := .proc #[] #[]
+    (.atomic (.abstract (.addImm 1)) #[] #[]) (pfx ++ "_if_add1")
+  let h_if_add1 := hashNode n_if_add1
+  let n_if_and_mask : Node := .proc #[] #[]
+    (.atomic (.abstract (.andImm (UInt8.ofNat mask.toNat))) #[] #[]) (pfx ++ s!"_if_and_{mask.toNat}")
+  let h_if_and_mask := hashNode n_if_and_mask
+  let n_if_cmp_head : Node := .proc #[h_head] #[h_bool]
+    (.atomic (.abstract .compare) #[h_head] #[]) (pfx ++ "_if_cmp_head")
+  let h_if_cmp_head := hashNode n_if_cmp_head
   let n_is_full : Node := .proc #[] #[h_bool]
-    (.intrinsic
-      #[s!"    movf    {hashLabel h_tail}, w, c",
-        "    addlw   1",
-        s!"    andlw   {mask.toNat}",
-        s!"    cpfseq  {hashLabel h_head}, c"]
-      #[h_head, h_tail] #[]
-      #["condition: (tail+1)&mask == head (buffer full)"])
+    (.seq #[h_if_load_tail, h_if_add1, h_if_and_mask, h_if_cmp_head])
     (pfx ++ "_is_full")
   let h_is_full := hashNode n_is_full
   -- -------------------------------------------------------------------------
@@ -107,13 +117,17 @@ def makeRingBuf
   -- -------------------------------------------------------------------------
   -- Build Store
   -- -------------------------------------------------------------------------
-  let nodes := Store.insert Store.empty h_head    n_head
-  let nodes := Store.insert nodes       h_tail    n_tail
-  let nodes := Store.insert nodes       h_data    n_data
-  let nodes := Store.insert nodes       h_temp    n_temp
-  let nodes := Store.insert nodes       h_bool    n_bool
-  let nodes := Store.insert nodes       h_is_full n_is_full
-  let nodes := Store.insert nodes       h_push    n_push
+  let nodes := Store.insert Store.empty h_head         n_head
+  let nodes := Store.insert nodes       h_tail         n_tail
+  let nodes := Store.insert nodes       h_data         n_data
+  let nodes := Store.insert nodes       h_temp         n_temp
+  let nodes := Store.insert nodes       h_bool         n_bool
+  let nodes := Store.insert nodes       h_if_load_tail n_if_load_tail
+  let nodes := Store.insert nodes       h_if_add1      n_if_add1
+  let nodes := Store.insert nodes       h_if_and_mask  n_if_and_mask
+  let nodes := Store.insert nodes       h_if_cmp_head  n_if_cmp_head
+  let nodes := Store.insert nodes       h_is_full      n_is_full
+  let nodes := Store.insert nodes       h_push         n_push
   { h_head, h_tail, h_data, h_temp, h_is_full, h_push, nodes }
 
 end AIL

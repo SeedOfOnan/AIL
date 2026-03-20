@@ -77,6 +77,10 @@ private def serAbstractOp : AbstractOp → ByteArray
   | .testBit     => serU8  9  | .load        => serU8 10  | .store       => serU8 11
   | .compare     => serU8 12  | .setBit      => serU8 13  | .clearBit    => serU8 14
   | .loadDiscard => serU8 15  | .indexLoad   => serU8 16  | .indexStore  => serU8 17
+  | .xorImm k   => serU8 18 ++ serU8 k
+  | .addImm k   => serU8 19 ++ serU8 k
+  | .andImm k   => serU8 20 ++ serU8 k
+  | .movImm k   => serU8 21 ++ serU8 k
 
 private def serOpRef : OpRef → ByteArray
   | .abstract op => serU8 0 ++ serAbstractOp op

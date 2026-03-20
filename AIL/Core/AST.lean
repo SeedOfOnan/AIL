@@ -91,6 +91,13 @@ inductive AbstractOp where
   | compare
   | indexLoad   -- reads[0]=staticArray, reads[1]=index → WREG = array[index]; emits FSR+INDF
   | indexStore  -- reads[0]=staticArray, reads[1]=index; WREG=value → array[index]=WREG
+  -- Immediate (literal) operand operations — WREG op k → WREG.
+  -- These carry the literal as part of the op, not as a node reference.
+  -- reads and writes arrays are empty; all operands are encoded in the op.
+  | xorImm (k : UInt8)  -- XORLW k: WREG ^= k; sets Z, N flags
+  | addImm (k : UInt8)  -- ADDLW k: WREG += k; sets C, DC, Z, OV, N flags
+  | andImm (k : UInt8)  -- ANDLW k: WREG &= k; sets Z, N flags
+  | movImm (k : UInt8)  -- MOVLW k: WREG  = k; no flags affected
 deriving Repr, BEq, DecidableEq
 
 /-- Operation reference: abstract core op or a user-defined intrinsic (by hash). -/

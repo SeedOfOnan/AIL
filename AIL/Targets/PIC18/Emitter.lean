@@ -59,6 +59,10 @@ inductive Insn where
   | movwf  (f : String)              -- MOVWF f, c   ; WREG → f
   | movf   (f : String) (d : Dest)   -- MOVF  f, d   ; f → d
   | movlw  (k : UInt8)               -- MOVLW k      ; k → WREG
+  | addlw  (k : UInt8)               -- ADDLW k      ; WREG += k
+  | andlw  (k : UInt8)               -- ANDLW k      ; WREG &= k
+  | xorlw  (k : UInt8)               -- XORLW k      ; WREG ^= k
+  | sublw  (k : UInt8)               -- SUBLW k      ; WREG = k - WREG
   | addwf  (f : String) (d : Dest)   -- ADDWF f, d   ; f + WREG → d
   | subwf  (f : String) (d : Dest)   -- SUBWF f, d   ; f - WREG → d
   | andwf  (f : String) (d : Dest)   -- ANDWF f, d
@@ -318,6 +322,10 @@ private def emitOp (ref : OpRef) (reads writes : Array Hash) : Emit Unit := do
           out (.movf idxSym .w)
           out (.addwf "FSR0L" .f)
           out (.movwf "INDF0")
+      | .xorImm k => out (.xorlw k)
+      | .addImm k => out (.addlw k)
+      | .andImm k => out (.andlw k)
+      | .movImm k => out (.movlw k)
   | .intrinsic ih =>
       -- Inline an intrinsic proc's instruction sequence.
       -- The hash must point to a Node.proc with ProcBody.intrinsic body.
@@ -478,6 +486,10 @@ def renderInsn : Insn → String
   | .movwf  f     => s!"    movwf   {f}, {renderAccess}"
   | .movf   f d   => s!"    movf    {f}, {renderDest d}, {renderAccess}"
   | .movlw  k     => s!"    movlw   {k}"
+  | .addlw  k     => s!"    addlw   {k}"
+  | .andlw  k     => s!"    andlw   {k}"
+  | .xorlw  k     => s!"    xorlw   {k}"
+  | .sublw  k     => s!"    sublw   {k}"
   | .addwf  f d   => s!"    addwf   {f}, {renderDest d}, {renderAccess}"
   | .subwf  f d   => s!"    subwf   {f}, {renderDest d}, {renderAccess}"
   | .andwf  f d   => s!"    andwf   {f}, {renderDest d}, {renderAccess}"

@@ -767,13 +767,10 @@ def ex09_main_loop : Example :=
     (.atomic (.abstract .load) #[h_getch_result] #[]) "load_getch_result"
   let h_load_gc := hashNode n_load_gc
 
+  -- xorlw 0x0A: WREG ^= '\n'.  Now a typed atomic op (AbstractOp.xorImm),
+  -- resolving the intrinsic workaround noted as DESIGN GAP C (AIL#15 closed).
   let n_xor_nl : Node := .proc #[] #[]
-    (.intrinsic
-      #["    xorlw   0x0a"]
-      #[] #[]
-      #["WREG ^= '\\n' (0x0A); Z flag set iff byte was '\\n'",
-        "DESIGN GAP C: no AbstractOp for literal-operand instructions (AIL#12)"])
-    "xor_newline"
+    (.atomic (.abstract (.xorImm 0x0a)) #[] #[]) "xor_newline"
   let h_xor_nl := hashNode n_xor_nl
 
   let n_test_z : Node := .proc #[] #[h_bool_nl]
