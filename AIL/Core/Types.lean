@@ -24,13 +24,19 @@ deriving Repr
 -- ---------------------------------------------------------------------------
 
 inductive Ty : Type where
-  | data   (space : AddrSpace) (width : Width)        : Ty
+  | data   (space : AddrSpace) (width : Width)           : Ty
   | periph (space : AddrSpace) (sem   : AccessSemantics) : Ty
   | bool   : Ty
   | unit   : Ty
+  /-- never: the bottom type. A proc returning Never does not return.
+      The compiler must not emit code after a call to such a proc.
+      Satisfies any return type context (bottom of the subtype lattice).
+      Used for: entry(reset) implicit return, user-defined panic. -/
+  | never  : Ty
   /-- A callable proc.
       params, rets: typed formal inputs and outputs (may include Ty.bool for flags).
-      maxBodyDepth: max additional call stack frames consumed transitively. -/
+      maxBodyDepth: max additional call stack frames consumed transitively.
+      If rets = [Ty.never], the proc does not return. -/
   | proc (params : List Ty) (rets : List Ty) (maxBodyDepth : Nat) : Ty
 deriving Repr, BEq
 

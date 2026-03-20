@@ -496,7 +496,11 @@ def compile (store : Store) (tyEnv : TyEnv) (ivt : Array IVTEntry)
         out (.lbl s!"_ail_vec{vec}")
         out (.lbl (hashLabel h))
         emitNode h
-        out .return_
+        -- Suppress trailing RETURN for procs that never return (Ty.never).
+        let doesNotReturn := match (← get).tyEnv h with
+          | some (Ty.proc _ [Ty.never] _) => true
+          | _                              => false
+        if !doesNotReturn then out .return_
   let (_, final) ← emitIVT.run initState
   -- Data section: EQU declarations collected during the emit pass.
   -- These must precede the code section so forward references resolve.
