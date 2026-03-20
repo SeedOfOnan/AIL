@@ -82,7 +82,9 @@ inductive AbstractOp where
   | add | sub | mul
   | and | or | xor | not
   | shiftL | shiftR
-  | testBit
+  | testBit   -- read a bitField node; emits BTFSS (skip if set — condition true)
+  | setBit    -- write 1 to a bitField node; emits BSF
+  | clearBit  -- write 0 to a bitField node; emits BCF
   | load | store
   | compare
 deriving Repr, BEq, DecidableEq
@@ -212,6 +214,19 @@ inductive Node where
   | formal
       (uid  : UInt64)
       (kind : FormalKind)
+
+  /-- bitField: a single named bit within a peripheral register.
+      register is the hash of the parent Node.peripheral.
+      bitPos is 0–7 (LSB = 0).
+      label is metadata only; excluded from identity.
+      Type: Ty.bool.
+      Read  via atomic(.abstract .testBit)  → BTFSS (skip if set)
+      Write via atomic(.abstract .setBit)   → BSF
+            or atomic(.abstract .clearBit)  → BCF -/
+  | bitField
+      (register : Hash)
+      (bitPos   : UInt8)
+      (label    : String)  -- excluded from identity
 
   /-- proc: a parameterized computation — the single computation node type.
       params  are hashes of formal nodes (typed inputs).

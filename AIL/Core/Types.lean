@@ -145,6 +145,9 @@ inductive HasType (cfg : TargetConfig) (env : TyEnv) : Node → Ty → Prop wher
   | formal_ok (uid : UInt64) (kind : FormalKind) :
       HasType cfg env (Node.formal uid kind) (formalTy kind)
 
+  | bitField_ok (register : Hash) (bitPos : UInt8) (label : String) :
+      HasType cfg env (Node.bitField register bitPos label) Ty.bool
+
   | proc_ok
       (params rets : Array Hash) (body : ProcBody) (label : String)
       (paramTys retTys : List Ty) (maxD : Nat)
@@ -207,9 +210,10 @@ def inferBodyDepth (cfg : TargetConfig) (env : TyEnv) (b : ProcBody) : Option Na
 
 def inferTy (cfg : TargetConfig) (env : TyEnv) (n : Node) : Option Ty :=
   match n with
-  | Node.data space w _ _      => some (Ty.data space w)
-  | Node.peripheral space _ sem _ => some (Ty.periph space sem)
-  | Node.formal _ kind         => some (formalTy kind)
+  | Node.data space w _ _          => some (Ty.data space w)
+  | Node.peripheral space _ sem _  => some (Ty.periph space sem)
+  | Node.formal _ kind             => some (formalTy kind)
+  | Node.bitField _ _ _            => some Ty.bool
   | Node.proc params rets body _ => do
       let paramTys ← resolveAll env params
       let retTys   ← resolveAll env rets

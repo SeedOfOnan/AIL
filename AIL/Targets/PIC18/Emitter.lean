@@ -198,7 +198,16 @@ private def resolveAddr (h : Hash) : Emit String := do
         declaredHashes := s.declaredHashes.push h }
       return sym
   | _ =>
-      throw s!"emitter: hash {h} is not a data/peripheral node"
+      throw s!"emitter: hash {h} is not a data or peripheral node"
+
+-- Resolve a bitField node to (register_symbol, bit_position).
+-- Used by testBit, setBit, clearBit op emitters.
+private def resolveBitField (h : Hash) : Emit (String × UInt8) := do
+  match ← lookupNode h with
+  | Node.bitField regH bitPos _ =>
+      let sym ← resolveAddr regH
+      return (sym, bitPos)
+  | _ => throw s!"emitter: hash {h} is not a bitField node"
 
 -- ---------------------------------------------------------------------------
 -- Op emission (from ProcBody.atomic)
@@ -247,10 +256,19 @@ private def emitOp (ref : OpRef) (reads writes : Array Hash) : Emit Unit := do
           let f ← resolveAddr (← reads[0]? |>.elim (throw "shiftR: no operand") pure)
           out (.rrncf f .f)
       | .testBit =>
-          -- BTFSC f, b  — skip next instruction if bit b of f is clear.
-          -- TODO: bit index must currently be a compile-time constant in reads[1].
-          let f ← resolveAddr (← reads[0]? |>.elim (throw "testBit: no register") pure)
-          out (.btfsc f 0)  -- TODO: resolve actual bit index from reads[1]
+          -- BTFSS f, b  — skip next instruction if bit b of f is SET.
+          -- In the cond skip-style protocol: skip happens when condition is TRUE,
+          -- so thenB executes when the bit is set. reads[0] must be a bitField node.
+          let (f, b) ← resolveBitField (← reads[0]? |>.elim (throw "testBit: no bitField") pure)
+          out (.btfss f b)
+      | .setBit =>
+          -- BSF f, b  — set bit b of f.  writes[0] must be a bitField node.
+          let (f, b) ← resolveBitField (← writes[0]? |>.elim (throw "setBit: no bitField") pure)
+          out (.bsf f b)
+      | .clearBit =>
+          -- BCF f, b  — clear bit b of f.  writes[0] must be a bitField node.
+          let (f, b) ← resolveBitField (← writes[0]? |>.elim (throw "clearBit: no bitField") pure)
+          out (.bcf f b)
       | .compare =>
           -- CPFSEQ f  — skip if f == WREG.
           let f ← resolveAddr (← reads[0]? |>.elim (throw "compare: no operand") pure)
@@ -290,6 +308,11 @@ partial def emitNode (h : Hash) : Emit Unit := do
       -- Ensure this SFR is declared in the data section (EQU).
       -- No code is emitted: peripheral nodes are address equates only.
       let _ ← resolveAddr h
+
+  | Node.bitField regH _ _ =>
+      -- Ensure the parent register is declared in the data section.
+      -- No code emitted: a bitField is a location, not a computation.
+      let _ ← resolveAddr regH
 
   | Node.formal _ _ =>
       -- Formal nodes are typed placeholders; no code emitted.
