@@ -640,11 +640,8 @@ def ex09_main_loop : Example :=
   
     -- -------------------------------------------------------------------------
     -- Bool formals
-    -- -------------------------------------------------------------------------
-    -- uid 101: for is_empty rets
-    -- uid 102: for test_is_newline rets (Z flag)
-    let h_bool_empty ← StoreM.node (.formal 101 .bool)
-    let h_bool_nl    ← StoreM.node (.formal 102 .bool)
+    let h_bool_empty ← StoreM.freshFormal .bool
+    let h_bool_nl    ← StoreM.freshFormal .bool
   
     -- -------------------------------------------------------------------------
     -- is_empty: head == tail (buffer is empty)
@@ -1225,7 +1222,7 @@ def runFlagOutputTest : IO Unit := do
   -- Part C — checkStore passes for proc with FormalKind.flag ret
   -- -------------------------------------------------------------------------
   let (_, s18) := StoreM.run <| do
-    let h_flagZ ← StoreM.node (.formal 100 (.flag .Z))
+    let h_flagZ ← StoreM.freshFormal (.flag .Z)
     StoreM.node (.proc #[] #[h_flagZ] (.atomic (.abstract (.xorImm 0x00)) #[] #[]) "xorImm_testZ")
   let chkC : Bool := match checkStore targetConfig s18 with
     | .ok _      => true
@@ -1236,7 +1233,7 @@ def runFlagOutputTest : IO Unit := do
   -- -------------------------------------------------------------------------
   let (h_cond_root, s18d) := StoreM.run <| do
     -- test proc: xorImm 0x00 with flag Z ret (XORLW sets Z if WREG was 0)
-    let h_flagZ  ← StoreM.node (.formal 200 (.flag .Z))
+    let h_flagZ  ← StoreM.freshFormal (.flag .Z)
     let h_test   ← StoreM.node (.proc #[] #[h_flagZ]
                                   (.atomic (.abstract (.xorImm 0x00)) #[] #[])
                                   "xorImm_testZ")
