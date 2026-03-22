@@ -254,6 +254,55 @@ type definition, not by the language.
 
 ---
 
+## User-definable: critical section
+
+A critical section (disable interrupts / body / re-enable interrupts) is
+**user-definable** from existing primitives — no language primitive needed.
+
+**Pattern:**
+```
+seq [disable_ints, body, enable_ints]
+```
+
+where `disable_ints` and `enable_ints` are procs using `AbstractOp.clearBit`
+and `AbstractOp.setBit` on the target's global-interrupt-enable bitField.
+
+**PIC18 implementation:** `AIL/Lib/PIC18/INTCON.lean` provides `makeINTCON`,
+which builds INTCON + GIE bitField + `disable_ints` + `enable_ints` nodes.
+
+```lean
+let ic := makeINTCON 0xFF2   -- INTCON SFR address (classic PIC18 / Q71)
+-- wrap any body hash in a critical section:
+let n_crit : Node := .proc #[] #[]
+  (.seq #[ic.h_disable_ints, h_body, ic.h_enable_ints]) "my_critical"
+-- merge ic.nodes into the program store
+```
+
+**Emitted PIC18 assembly:**
+```asm
+bcf  INTCON, 7, c    ; GIE = 0 — disable all maskable interrupts
+; ... body ...
+bsf  INTCON, 7, c    ; GIE = 1 — re-enable
+```
+
+**Why not a language primitive:** A critical section is expressible as a `seq`
+of two `clearBit`/`setBit` atomic ops on a peripheral bitField. The hardware
+register (INTCON) is target-specific, so it belongs in a target library, not
+in Core. The compiler does not need special knowledge of critical sections to
+emit correct code — `clearBit` and `setBit` are sufficient.
+
+**Safety note (PIC18):** BCF INTCON,GIE is not atomic with respect to a
+concurrently completing RETFIE. If the ISR is mid-execution when GIE is
+cleared, it will still complete (RETFIE restores GIE from the stack).
+The critical section protects the body from being *interrupted*, not from
+an already in-progress ISR frame.
+
+**Future:** `ProcBody.critical` as a typed AST node would make critical
+sections inspectable by the compiler (e.g. to verify no nested
+`enable_ints` calls inside the body). For now the `seq` pattern suffices.
+
+---
+
 ## Option[T] — nullable results
 
 `Option[T]` is **user-definable**, not a language primitive.

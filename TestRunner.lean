@@ -846,12 +846,56 @@ def ex09_main_loop : Example :=
     ivt   := #[(0, h_main)] }
 
 -- ---------------------------------------------------------------------------
+-- Ex10: Critical section  (BCF INTCON.GIE / BSF INTCON.GIE)
+--
+-- Demonstrates makeINTCON library and the critical section pattern.
+-- A byte copy (src → dst) is wrapped in disable_ints / enable_ints.
+--
+-- Expected PIC18 output:
+--   bcf  INTCON, 7, c    ; GIE = 0
+--   movf src, w, c
+--   movwf dst, c
+--   bsf  INTCON, 7, c    ; GIE = 1
+-- ---------------------------------------------------------------------------
+
+def ex10_critical : Example :=
+  let ic := makeINTCON 0xFF2
+  let n_src  : Node := .data .data .w8 0x20 "src"
+  let h_src  := hashNode n_src
+  let n_dst  : Node := .data .data .w8 0x21 "dst"
+  let h_dst  := hashNode n_dst
+  let n_load : Node := .proc #[h_src] #[] (.atomic (.abstract .load)  #[h_src] #[]) "load_src"
+  let h_load := hashNode n_load
+  let n_stor : Node := .proc #[] #[h_dst] (.atomic (.abstract .store) #[] #[h_dst]) "store_dst"
+  let h_stor := hashNode n_stor
+  -- body: copy src → dst
+  let n_body : Node := .proc #[] #[] (.seq #[h_load, h_stor]) "copy_body"
+  let h_body := hashNode n_body
+  -- critical section: disable_ints; copy; enable_ints
+  let n_crit : Node := .proc #[] #[]
+    (.seq #[ic.h_disable_ints, h_body, ic.h_enable_ints]) "critical_copy"
+  let h_crit := hashNode n_crit
+  let n_reset : Node := .proc #[] #[] (.seq #[h_crit]) "reset"
+  let h_reset := hashNode n_reset
+  let s := ic.nodes.foldl (fun acc (h, n) => Store.insert acc h n) Store.empty
+  let s := Store.insert s h_src   n_src
+  let s := Store.insert s h_dst   n_dst
+  let s := Store.insert s h_load  n_load
+  let s := Store.insert s h_stor  n_stor
+  let s := Store.insert s h_body  n_body
+  let s := Store.insert s h_crit  n_crit
+  let s := Store.insert s h_reset n_reset
+  { name := "Ex10: Critical section  (BCF/BSF INTCON.GIE around copy)",
+    store := s, ivt := #[(0, h_reset)] }
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
 def main : IO Unit := do
   let examples := [ex01_copy, ex02_add, ex03_cond, ex04_loop, ex05_two_vec,
-                   ex07_index_copy, ex06_uart_rx, ex08_ringbuf, ex09_main_loop]
+                   ex07_index_copy, ex06_uart_rx, ex08_ringbuf, ex09_main_loop,
+                   ex10_critical]
   for ex in examples do
     runExample ex
     IO.println ""
