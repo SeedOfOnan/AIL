@@ -15,7 +15,7 @@ import AIL
 import AIL.Targets.PIC18.Emitter
 import AIL.Targets.PIC18.Capabilities
 
-open AIL AIL.PIC18
+open AIL AIL.PIC18 AIL.GitLayout
 
 -- ---------------------------------------------------------------------------
 -- Test harness
@@ -1031,6 +1031,66 @@ def runSerializeTest : IO Unit := do
   | .ok _     => IO.println s!"  corrupt magic rejected         : {fail}"
 
 -- ---------------------------------------------------------------------------
+-- Ex16: Git layout — pure-function tests  (AIL#11)
+--
+-- Tests the pure parts of the git layout module without filesystem I/O:
+--   1. hashToHex / hexToHash round-trip
+--   2. hashToHex produces the correct 2-char prefix and 14-char suffix
+--   3. renderRootsFile / parseRootsFile round-trip
+--   4. parseRootsFile rejects invalid lines and accepts comments
+--
+-- The full filesystem round-trip (writeLayout / readLayout) is exercised
+-- by:  lake exe ailc store write <dir>  &&  lake exe ailc store read <dir>
+-- ---------------------------------------------------------------------------
+
+def runGitLayoutTest : IO Unit := do
+  IO.println "=== Ex16: Git layout — pure functions  (AIL#11) ==="
+  let pass := "PASS"; let fail := "FAIL"
+  -- -------------------------------------------------------------------------
+  -- 1. hashToHex / hexToHash round-trip
+  -- -------------------------------------------------------------------------
+  let h1 : Hash := 0x1234567890ABCDEF
+  let hex1 := hashToHex h1
+  let chk1 : Bool := hex1 == "1234567890abcdef"
+  let chk2 : Bool := hexToHash hex1 == some h1
+  let chk3 : Bool := hexToHash "zzzzzzzzzzzzzzzz" == none   -- invalid hex
+  let chk4 : Bool := hexToHash "123"               == none   -- too short
+  IO.println s!"  hashToHex 0x1234567890ABCDEF = \"{hex1}\" : {if chk1 then pass else fail}"
+  IO.println s!"  hexToHash round-trip          : {if chk2 then pass else fail}"
+  IO.println s!"  hexToHash rejects invalid     : {if chk3 then pass else fail}"
+  IO.println s!"  hexToHash rejects short       : {if chk4 then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- 2. 2+14 path split
+  -- -------------------------------------------------------------------------
+  let (dir2, file14) := (hex1.toList.take 2 |> String.ofList,
+                          hex1.toList.drop 2 |> String.ofList)
+  let chk5 : Bool := dir2 == "12" && file14 == "34567890abcdef"
+  IO.println s!"  path split (dir={dir2}, file={file14}): {if chk5 then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- 3. renderRootsFile / parseRootsFile round-trip
+  -- -------------------------------------------------------------------------
+  let nt0 := NameTable.insert (NameTable.insert NameTable.empty "reset" h1) "main" 0xDEADBEEF
+  let rendered := renderRootsFile nt0
+  let chk6 : Bool := match parseRootsFile rendered with
+    | .ok nt => nt.lookup "reset" == some h1 && nt.lookup "main" == some 0xDEADBEEF
+    | .error _ => false
+  IO.println s!"  roots file round-trip         : {if chk6 then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- 4. parseRootsFile handles comments and blank lines
+  -- -------------------------------------------------------------------------
+  let sample := "# header\n\nreset 999\n# another comment\nmain 42\n"
+  let chk7 : Bool := match parseRootsFile sample with
+    | .ok nt => nt.lookup "reset" == some 999 && nt.lookup "main" == some 42
+    | .error _ => false
+  IO.println s!"  comments and blanks ignored   : {if chk7 then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- 5. parseRootsFile rejects bad lines
+  -- -------------------------------------------------------------------------
+  let chk8 : Bool := match parseRootsFile "bad-line-no-space\n" with
+    | .error _ => true | .ok _ => false
+  IO.println s!"  bad line rejected             : {if chk8 then pass else fail}"
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
@@ -1050,4 +1110,6 @@ def main : IO Unit := do
   runCapabilityTest
   IO.println ""
   runSerializeTest
+  IO.println ""
+  runGitLayoutTest
   IO.println ""

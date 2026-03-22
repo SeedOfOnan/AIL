@@ -319,4 +319,19 @@ def Store.ofByteArray (ba : ByteArray) : Except String (Store × NameTable) :=
     let nt := rootList.foldl (fun t r => NameTable.insert t r.name r.hash) NameTable.empty
     return (store, nt)
 
+-- ---------------------------------------------------------------------------
+-- Single-node serialization (for file-per-node storage, AIL#11)
+-- ---------------------------------------------------------------------------
+
+/-- Serialize a single Node to bytes.
+    Used by the git layout to write one file per node.
+    The encoding is the same payload format as in Store.toByteArray. -/
+def Store.serializeNode (n : Node) : ByteArray := serNodeFull n
+
+/-- Deserialize a single Node from bytes produced by Store.serializeNode.
+    Does NOT verify the hash — the caller is responsible for checking
+    hashNode(result) == expected_hash (typically encoded in the file path). -/
+def Store.deserializeNode (ba : ByteArray) : Except String Node :=
+  runParser ba readNodeFull
+
 end AIL

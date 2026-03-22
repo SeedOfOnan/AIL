@@ -11,6 +11,7 @@ import AIL.Core.Types
 import AIL.Core.StaticAlloc
 import AIL.Core.Capability
 import AIL.Core.Serialize
+import AIL.Core.GitLayout
 
 -- Analysis passes
 import AIL.Analysis.FSRCheck
