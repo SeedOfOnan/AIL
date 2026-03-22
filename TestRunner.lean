@@ -1293,7 +1293,7 @@ def runCompareImmTest : IO Unit := do
   -- -------------------------------------------------------------------------
   -- Part C — checkStore with compareImm
   -- -------------------------------------------------------------------------
-  let (h_cmp_proc, s19) := StoreM.run <| do
+  let (_, s19) := StoreM.run (α := Hash) <| do
     let h_byte ← StoreM.node (.data .data .w8 0x20 "byte")
     let h_bool ← StoreM.freshFormal .bool
     StoreM.node (.proc #[] #[h_bool] (.atomic (.abstract (.compareImm 0x0a)) #[h_byte] #[]) "cmp_nl")
@@ -1326,6 +1326,50 @@ def runCompareImmTest : IO Unit := do
           IO.println s!"  compile emits cpfseq                      : {if hasCpfseq then pass else fail}"
 
 -- ---------------------------------------------------------------------------
+-- Ex20: NameTable labels in emitter  (AIL#25)
+--
+-- Build a one-proc store, name the root "my_reset" in a NameTable, and
+-- compile with that table.  Verify:
+--   A. Without NameTable: output contains hash label, no "my_reset" label.
+--   B. With NameTable:    output contains both hash label AND "my_reset" label.
+--   C. IVT comment line mentions the name when NameTable is supplied.
+-- ---------------------------------------------------------------------------
+
+def runNameTableTest : IO Unit := do
+  IO.println "=== Ex20: NameTable labels in emitter  (AIL#25) ==="
+  let pass := "PASS"; let fail := "FAIL"
+  let (h_reset, s20) := StoreM.run <| do
+    StoreM.node (.proc #[] #[] (.seq #[]) "reset_proc")
+  match checkStore targetConfig s20 with
+  | .error d =>
+      IO.println s!"  checkStore FAIL: {d.message}"
+  | .ok tyEnv =>
+      let ivt : Array IVTEntry := #[(.reset, h_reset)]
+      let hashLbl := hashLabel h_reset
+      -- Part A: no NameTable — hash label present, name absent
+      match compile s20 tyEnv ivt with
+      | .error msg => IO.println s!"  compile (no NT): FAIL ({msg})"
+      | .ok lines =>
+          let hasHash  := lines.any fun l => !(l.splitOn hashLbl).tail.isEmpty
+          let hasName  := lines.any fun l => !(l.splitOn "my_reset").tail.isEmpty
+          IO.println s!"  no NameTable: hash label present          : {if hasHash  then pass else fail}"
+          IO.println s!"  no NameTable: 'my_reset' absent           : {if !hasName then pass else fail}"
+      -- Part B: with NameTable — both labels present
+      let nt : NameTable := NameTable.empty |>.insert "my_reset" h_reset
+      match compile s20 tyEnv ivt nt with
+      | .error msg => IO.println s!"  compile (with NT): FAIL ({msg})"
+      | .ok lines =>
+          let hasHash  := lines.any fun l => !(l.splitOn hashLbl).tail.isEmpty
+          let hasName  := lines.any fun l => !(l.splitOn "my_reset:").tail.isEmpty
+          IO.println s!"  with NameTable: hash label present        : {if hasHash then pass else fail}"
+          IO.println s!"  with NameTable: 'my_reset:' label present : {if hasName then pass else fail}"
+          -- Part C: IVT comment mentions the name
+          let ivtHasName := lines.any fun l =>
+            !(l.splitOn "; reset").tail.isEmpty &&
+            !(l.splitOn "my_reset").tail.isEmpty
+          IO.println s!"  IVT comment includes name                 : {if ivtHasName then pass else fail}"
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
@@ -1353,4 +1397,6 @@ def main : IO Unit := do
   runFlagOutputTest
   IO.println ""
   runCompareImmTest
+  IO.println ""
+  runNameTableTest
   IO.println ""

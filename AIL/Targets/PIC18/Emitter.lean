@@ -60,6 +60,9 @@ structure EmitState where
   store          : Store
   /-- Type environment for the store (read-only). -/
   tyEnv          : TyEnv
+  /-- Named roots: when a hash appears here, its name is emitted as a label
+      alias alongside the hash label (AIL#25). -/
+  nameTable      : NameTable := NameTable.empty
 
 /-- The emitter monad: mutable state + error reporting. -/
 abbrev Emit := StateT EmitState (Except String)
@@ -90,6 +93,15 @@ private def wasVisited (h : Hash) : Emit Bool := do
   return (← get).visited.contains h
 
 -- hashLabel is defined in AIL.Core.Hash (public); used here and in node constructors.
+
+/-- Emit a label for each NameTable entry whose hash matches h.
+    These are alias labels: the hash label is always emitted first, then any
+    human-readable names follow.  Callers (CALL/GOTO) always use hash labels
+    for stability; named labels are for linker scripts and debuggers. -/
+private def emitNamedLabels (h : Hash) : Emit Unit := do
+  let nt := (← get).nameTable
+  for entry in nt do
+    if entry.hash == h then out (.lbl entry.name)
 
 -- ---------------------------------------------------------------------------
 -- Data / peripheral node helpers
@@ -483,6 +495,7 @@ partial def emitSubroutine (h : Hash) : Emit Unit := do
   if ← wasVisited h then return
   markVisited h
   out (.lbl (hashLabel h))
+  emitNamedLabels h        -- emit named aliases if any (AIL#25)
   emitNode h
   out .return_
 
@@ -536,13 +549,18 @@ abbrev IVTEntry := PIC18Vector × Hash
     Returns an Array of XC8 PIC Assembler-compatible assembly lines.
     Join with "\n" to produce a .s file for xc8-cc / xc8-as.
 
-    TODO: accept a NameTable to resolve callee labels by name rather than hash.
+    Named roots (AIL#25): if a NameTable is supplied, each hash that appears in
+    the table gets its name emitted as an alias label alongside the hash label.
+    Callers (CALL/GOTO) always use the stable hash label; named labels serve
+    linker scripts and debuggers.  Default: NameTable.empty (no named labels).
+
     TODO: emit processor directive and config words for a complete .asm file.
     TODO: emit hardware IVT section (Q71: dw entries at IVTBASE; classic PIC18:
           absolute psects at 0x0000 / 0x0008 / 0x0018). -/
 def compile (store : Store) (tyEnv : TyEnv) (ivt : Array IVTEntry)
+    (nameTable : NameTable := NameTable.empty)
     : Except String (Array String) := do
-  let initState : EmitState := { store, tyEnv }
+  let initState : EmitState := { store, tyEnv, nameTable }
   -- Emit each IVT entry as a labeled subroutine.
   -- The vec label (_ail_vec{n}) is the stable name callers / linker scripts use.
   -- The hash label is also emitted so callees can CALL/GOTO by content address.
@@ -557,6 +575,7 @@ def compile (store : Store) (tyEnv : TyEnv) (ivt : Array IVTEntry)
         markVisited h
         out (.lbl s!"_ail_vec{vecNum}")
         out (.lbl (hashLabel h))
+        emitNamedLabels h  -- emit named aliases if any (AIL#25)
         emitNode h
         -- Suppress trailing RETURN if the proc never returns.
         -- Two cases: explicit Ty.never return type, or a ProcBody.forever body
@@ -580,7 +599,10 @@ def compile (store : Store) (tyEnv : TyEnv) (ivt : Array IVTEntry)
   -- IVT summary as comments (hardware IVT section is a TODO).
   let ivtComments : Array String :=
     #["; --- IVT ---"] ++
-    ivt.map (fun (vec, h) => s!"; {vec.name} (vec {vec.toVecNum}) → {hashLabel h}") ++
+    ivt.map (fun (vec, h) =>
+      let names := nameTable.filter (·.hash == h) |>.map (·.name)
+      let nameStr := if names.isEmpty then "" else " (" ++ String.intercalate ", " names.toList ++ ")"
+      s!"; {vec.name} (vec {vec.toVecNum}) → {hashLabel h}{nameStr}") ++
     #[""]
   -- Code section: typed instructions rendered to assembly text.
   let codeLines := final.insns.map renderInsn
