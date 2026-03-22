@@ -78,6 +78,12 @@ inductive DiagnosticKind where
       critical section, not inside it.
       Fix: move the setBit(GIE) outside the critical body, or remove it. -/
   | CriticalNested
+  /-- The store's RAM or flash usage exceeds the target's declared limit (AIL#29).
+      resource is "ram" or "flash"; used is the measured value; limit is the
+      CapabilityRecord limit.
+      Fix: reduce the number of data nodes, shrink static arrays, or target
+      a larger device. -/
+  | BudgetExceeded
 deriving Repr, BEq, DecidableEq
 
 def DiagnosticKind.toJson : DiagnosticKind → String
@@ -88,6 +94,7 @@ def DiagnosticKind.toJson : DiagnosticKind → String
   | .WREGClobber        => "\"WREGClobber\""
   | .FlagNotProduced    => "\"FlagNotProduced\""
   | .CriticalNested     => "\"CriticalNested\""
+  | .BudgetExceeded     => "\"BudgetExceeded\""
 
 -- ---------------------------------------------------------------------------
 -- FixSuggestion  (R5.5 — machine-applicable patches)

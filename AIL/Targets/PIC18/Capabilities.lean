@@ -27,7 +27,8 @@ def pic18Capabilities : CapabilityRecord where
     "forever",
     "whileLoop",
     "call",
-    "intrinsic"
+    "intrinsic",
+    "critical"
   ]
 
   abstractOps := #[
@@ -52,7 +53,13 @@ def pic18Capabilities : CapabilityRecord where
     "loopBoundDecrement: 8-bit only; 16/32-bit bounds need multi-byte decrement",
     "callSpecialisation: formals not substituted at call sites; shared memory convention only",
     "subroutineOrdering: callees emitted inline at call site, not scheduled after caller RETURN",
-    "ivtHardwareSection: hardware IVT section not yet emitted (psect at IVTBASE / 0x0008 / 0x0018)"
+    "isrContextSave: no prologue/epilogue emitted for ISR save/restore (AIL#28)"
   ]
+
+  -- PIC18 typical device limits (PIC18F series mid-range).
+  -- 4096 bytes GPR RAM (0x000–0xFFF, banked); 65536 bytes flash (128Kw).
+  -- These are conservative figures; larger devices (PIC18F97J60 etc.) exceed these.
+  ramBytesLimit  := 4096
+  flashBytesLimit := 65536
 
 end AIL.PIC18

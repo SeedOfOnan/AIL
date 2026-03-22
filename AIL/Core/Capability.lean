@@ -41,6 +41,14 @@ structure CapabilityRecord where
   /-- Known partial implementations or hard limitations.
       Each entry is "key: prose" — agents split on ": " to extract the key. -/
   limitations   : Array String
+  /-- Maximum RAM bytes available on a typical device of this target family.
+      0 = not constrained / not reported by this backend.
+      Agents use this to check Store RAM usage against the budget (AIL#29). -/
+  ramBytesLimit  : Nat           := 0
+  /-- Maximum flash bytes available on a typical device of this target family.
+      0 = not constrained / not reported by this backend.
+      Agents use this to check compiled flash usage against the budget (AIL#29). -/
+  flashBytesLimit : Nat          := 0
 
 -- ---------------------------------------------------------------------------
 -- JSON renderer
@@ -58,6 +66,8 @@ def CapabilityRecord.toJson (r : CapabilityRecord) : String :=
   ",\"abstractOps\":"   ++ jsonStrArray r.abstractOps ++
   ",\"nodeTypes\":"     ++ jsonStrArray r.nodeTypes ++
   ",\"limitations\":"   ++ jsonStrArray r.limitations ++
+  ",\"ramBytesLimit\":"  ++ toString r.ramBytesLimit ++
+  ",\"flashBytesLimit\":" ++ toString r.flashBytesLimit ++
   "}"
 
 end AIL

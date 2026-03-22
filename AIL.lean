@@ -16,6 +16,7 @@ import AIL.Core.GitLayout
 -- Analysis passes
 import AIL.Analysis.FSRCheck
 import AIL.Analysis.WREGCheck
+import AIL.Analysis.BudgetCheck
 
 -- Standard library
 import AIL.Lib.PIC18.RingBuf

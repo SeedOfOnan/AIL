@@ -1480,6 +1480,51 @@ def runCriticalTest : IO Unit := do
   IO.println s!"  serialize round-trip preserves hash       : {if chkD then pass else fail}"
 
 -- ---------------------------------------------------------------------------
+-- Ex23: Resource budget checking  (AIL#29)
+--
+-- Checks:
+--   A. ramUsed counts data and staticArray bytes correctly.
+--   B. flashUsed returns 0 for a blank/comment-only assembly output.
+--   C. checkBudget returns empty when under budget.
+--   D. checkBudget returns BudgetExceeded when RAM exceeds limit.
+--   E. CapabilityRecord JSON includes ramBytesLimit and flashBytesLimit.
+-- ---------------------------------------------------------------------------
+
+def runBudgetCheckTest : IO Unit := do
+  IO.println "=== Ex23: Resource budget checking  (AIL#29) ==="
+  let pass := "PASS"; let fail := "FAIL"
+  -- Part A: ramUsed
+  let (_, sA) := StoreM.run <| do
+    let _ ← StoreM.node (.data .data .w8  0x20 "a")   -- 1 byte
+    let _ ← StoreM.node (.data .data .w16 0x30 "b")   -- 2 bytes
+    let _ ← StoreM.node (.staticArray .data .w8 0x40 4 "arr")  -- 4 bytes
+    StoreM.node (.proc #[] #[] (.seq #[]) "nop")       -- 0 bytes
+  let ram := AIL.BudgetCheck.ramUsed sA
+  IO.println s!"  ramUsed (1+2+4=7 bytes)                  : {if ram == 7 then pass else fail} ({ram})"
+  -- Part B: flashUsed on non-code lines
+  let nonCodeLines : Array String := #["", "; a comment", "_label:", "    EQU 0x20", "    PSECT foo"]
+  let flashNonCode := AIL.BudgetCheck.flashUsed nonCodeLines
+  IO.println s!"  flashUsed (non-code lines = 0)           : {if flashNonCode == 0 then pass else fail} ({flashNonCode})"
+  -- Part C: checkBudget under budget
+  let capLoose : CapabilityRecord :=
+    { target := "test", procBodyForms := #[], abstractOps := #[],
+      nodeTypes := #[], limitations := #[],
+      ramBytesLimit := 4096, flashBytesLimit := 65536 }
+  let diags := AIL.BudgetCheck.checkBudget sA capLoose #[]
+  IO.println s!"  checkBudget under budget → no diags      : {if diags.isEmpty then pass else fail}"
+  -- Part D: checkBudget over RAM limit
+  let capTight : CapabilityRecord := { capLoose with ramBytesLimit := 4 }
+  let diagsTight := AIL.BudgetCheck.checkBudget sA capTight #[]
+  let hasBudgetErr := diagsTight.any fun d => d.kind == .BudgetExceeded
+  IO.println s!"  checkBudget over limit → BudgetExceeded  : {if hasBudgetErr then pass else fail}"
+  -- Part E: JSON includes limit fields
+  let json := pic18Capabilities.toJson
+  let hasRam   := !(json.splitOn "ramBytesLimit").tail.isEmpty
+  let hasFlash := !(json.splitOn "flashBytesLimit").tail.isEmpty
+  IO.println s!"  capabilities JSON has ramBytesLimit       : {if hasRam   then pass else fail}"
+  IO.println s!"  capabilities JSON has flashBytesLimit     : {if hasFlash then pass else fail}"
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
@@ -1513,4 +1558,6 @@ def main : IO Unit := do
   runIVTSectionTest
   IO.println ""
   runCriticalTest
+  IO.println ""
+  runBudgetCheckTest
   IO.println ""
