@@ -22,6 +22,7 @@
 --   - Subroutine ordering bug: callees emitted inline, not scheduled after RETURN
 
 import AIL.Core.Types
+import AIL.Targets.PIC18.ISA
 
 namespace AIL.PIC18
 
@@ -35,73 +36,6 @@ namespace AIL.PIC18
     NOTE: Classic PIC18C devices (reference manual DS39500A) have only 31 levels.
     This config is Q71-specific. -/
 def targetConfig : TargetConfig := { maxCallDepth := 127 }
-
--- ---------------------------------------------------------------------------
--- Typed instruction representation
--- Covers the subset needed to lower all PIC18 AIL node types.
--- Extended as new primitives are needed; never shrink this set.
--- ---------------------------------------------------------------------------
-
-/-- Result destination for byte-oriented file register operations. -/
-inductive Dest where
-  | w  -- result written to WREG
-  | f  -- result written back to file register f
-  deriving Repr, BEq
-
-/-- A PIC18 instruction or assembler pseudo-op.
-    File register addresses (f) are Strings: either a hash-derived symbol name
-    (e.g. "_n12345") defined by an EQU in the data section, or a numeric literal.
-    Using String allows the assembler to resolve symbols, improving readability
-    and enabling cross-file linking when compilation is split.
-    TODO: extend to banked addresses (BANKMASK + BSR management). -/
-inductive Insn where
-  -- Byte-oriented file register operations
-  | movwf  (f : String)              -- MOVWF f, c   ; WREG → f
-  | movf   (f : String) (d : Dest)   -- MOVF  f, d   ; f → d
-  | movlw  (k : UInt8)               -- MOVLW k      ; k → WREG
-  | addlw  (k : UInt8)               -- ADDLW k      ; WREG += k
-  | andlw  (k : UInt8)               -- ANDLW k      ; WREG &= k
-  | xorlw  (k : UInt8)               -- XORLW k      ; WREG ^= k
-  | sublw  (k : UInt8)               -- SUBLW k      ; WREG = k - WREG
-  | addwf  (f : String) (d : Dest)   -- ADDWF f, d   ; f + WREG → d
-  | subwf  (f : String) (d : Dest)   -- SUBWF f, d   ; f - WREG → d
-  | andwf  (f : String) (d : Dest)   -- ANDWF f, d
-  | iorwf  (f : String) (d : Dest)   -- IORWF f, d
-  | xorwf  (f : String) (d : Dest)   -- XORWF f, d
-  | comf   (f : String) (d : Dest)   -- COMF  f, d   ; ~f → d
-  | rlncf  (f : String) (d : Dest)   -- RLNCF f, d   ; rotate left, no carry
-  | rrncf  (f : String) (d : Dest)   -- RRNCF f, d   ; rotate right, no carry
-  | mulwf  (f : String)              -- MULWF f      ; WREG × f → PRODH:PRODL
-  | mullw  (k : UInt8)               -- MULLW k      ; WREG × k → PRODH:PRODL
-  | decfsz (f : String) (d : Dest)   -- DECFSZ f, d  ; decrement, skip if zero
-  -- Bit-oriented operations
-  | bcf    (f : String) (b : UInt8)  -- BCF f, b
-  | bsf    (f : String) (b : UInt8)  -- BSF f, b
-  | btfsc  (f : String) (b : UInt8)  -- BTFSC f, b   ; skip if bit clear
-  | btfss  (f : String) (b : UInt8)  -- BTFSS f, b   ; skip if bit set
-  -- Comparison
-  | cpfseq (f : String)              -- CPFSEQ f     ; skip if f == WREG
-  | cpfsgt (f : String)              -- CPFSGT f     ; skip if f > WREG
-  | cpfslt (f : String)              -- CPFSLT f     ; skip if f < WREG
-  | tstfsz (f : String)              -- TSTFSZ f     ; skip if f == 0
-  -- Control flow
-  | call   (lbl : String)           -- CALL  label, 0
-  | goto_  (lbl : String)           -- GOTO  label
-  | bra    (lbl : String)           -- BRA   label       ; short relative branch
-  | return_                         -- RETURN
-  | retfie (fast : Bool)            -- RETFIE [FAST]     ; return from interrupt
-  -- FSR indirect
-  | lfsr   (f : UInt8) (sym : String) -- LFSR FSRf, sym ; load FSR with 12-bit address literal
-  -- Assembler pseudo-ops
-  | lbl    (name : String)          -- name:             ; label definition
-  | global (name : String)          --     GLOBAL name
-  | nop                             --     NOP
-  | comment (text : String)         -- ; text
-  /-- Raw assembly line emitted verbatim. Used for intrinsic instruction bodies.
-      The agent is responsible for correctness of the text.
-      Symbols must use the hashLabel format (_n<hash>) to match emitter EQUs. -/
-  | raw     (text : String)
-  deriving Repr
 
 -- ---------------------------------------------------------------------------
 -- Emitter state and monad
@@ -481,66 +415,6 @@ partial def emitSubroutine (h : Hash) : Emit Unit := do
   out .return_
 
 end  -- mutual
-
--- ---------------------------------------------------------------------------
--- Instruction text rendering  (XC8 PIC Assembler syntax)
--- ---------------------------------------------------------------------------
-
--- XC8 PIC Assembler operand tokens (source: MPLAB XC8 PIC Assembler User Guide).
--- XC8 uses letter tokens, NOT the numeric 0/1 style or MPASM symbolic names.
--- Destination: ,w (WREG) or ,f (file register).
--- Access bank qualifier: ,c (or ,a) for Access Bank, ,b for banked.
--- Do NOT mix letter and numeric forms in the same instruction.
-
-private def renderDest : Dest → String
-  | .w => "w"   -- XC8: lowercase 'w' (not W, not 0)
-  | .f => "f"   -- XC8: lowercase 'f' (not F, not 1)
-
--- Access bank qualifier in XC8 style.
-private def renderAccess : String := "c"  -- 'c' = Access Bank (unbanked); 'b' = banked
-
-/-- Render a single instruction to XC8 PIC Assembler assembly text.
-    Syntax follows MPLAB XC8 PIC Assembler User Guide (XC8 v3.x, LLVM backend).
-    Operand style: ,w / ,f for destination; ,c for access bank (not ,0 / ,1 / ACCESS). -/
-def renderInsn : Insn → String
-  | .movwf  f     => s!"    movwf   {f}, {renderAccess}"
-  | .movf   f d   => s!"    movf    {f}, {renderDest d}, {renderAccess}"
-  | .movlw  k     => s!"    movlw   {k}"
-  | .addlw  k     => s!"    addlw   {k}"
-  | .andlw  k     => s!"    andlw   {k}"
-  | .xorlw  k     => s!"    xorlw   {k}"
-  | .sublw  k     => s!"    sublw   {k}"
-  | .addwf  f d   => s!"    addwf   {f}, {renderDest d}, {renderAccess}"
-  | .subwf  f d   => s!"    subwf   {f}, {renderDest d}, {renderAccess}"
-  | .andwf  f d   => s!"    andwf   {f}, {renderDest d}, {renderAccess}"
-  | .iorwf  f d   => s!"    iorwf   {f}, {renderDest d}, {renderAccess}"
-  | .xorwf  f d   => s!"    xorwf   {f}, {renderDest d}, {renderAccess}"
-  | .comf   f d   => s!"    comf    {f}, {renderDest d}, {renderAccess}"
-  | .rlncf  f d   => s!"    rlncf   {f}, {renderDest d}, {renderAccess}"
-  | .rrncf  f d   => s!"    rrncf   {f}, {renderDest d}, {renderAccess}"
-  | .mulwf  f     => s!"    mulwf   {f}, {renderAccess}"
-  | .mullw  k     => s!"    mullw   {k}"
-  | .decfsz f d   => s!"    decfsz  {f}, {renderDest d}, {renderAccess}"
-  | .bcf    f b   => s!"    bcf     {f}, {b}, {renderAccess}"
-  | .bsf    f b   => s!"    bsf     {f}, {b}, {renderAccess}"
-  | .btfsc  f b   => s!"    btfsc   {f}, {b}, {renderAccess}"
-  | .btfss  f b   => s!"    btfss   {f}, {b}, {renderAccess}"
-  | .cpfseq f     => s!"    cpfseq  {f}, {renderAccess}"
-  | .cpfsgt f     => s!"    cpfsgt  {f}, {renderAccess}"
-  | .cpfslt f     => s!"    cpfslt  {f}, {renderAccess}"
-  | .tstfsz f     => s!"    tstfsz  {f}, {renderAccess}"
-  | .call   lbl   => s!"    call    {lbl}, 0"
-  | .goto_  lbl   => s!"    goto    {lbl}"
-  | .bra    lbl   => s!"    bra     {lbl}"
-  | .lfsr   f sym => s!"    lfsr    {f}, {sym}"
-  | .return_      => s!"    return"
-  | .retfie true  => s!"    retfie  1"       -- FAST bit
-  | .retfie false => s!"    retfie  0"
-  | .lbl    name  => s!"{name}:"
-  | .global name  => s!"    global  {name}"
-  | .nop          => s!"    nop"
-  | .comment t    => s!";{t}"
-  | .raw     t    => t
 
 -- ---------------------------------------------------------------------------
 -- Top-level entry point

@@ -9,8 +9,9 @@ import AIL.Core.Store
 import AIL.Core.Types
 
 -- Standard library
-import AIL.Lib.RingBuf
+import AIL.Lib.PIC18.RingBuf
 import AIL.Lib.PIC18.INTCON
 
 -- Targets (stubs — see docs/TIERS.md for tier discipline)
+import AIL.Targets.PIC18.ISA
 import AIL.Targets.PIC18.Emitter
