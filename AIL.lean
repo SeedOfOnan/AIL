@@ -9,6 +9,9 @@ import AIL.Core.Store
 import AIL.Core.Types
 import AIL.Core.StaticAlloc
 
+-- Analysis passes
+import AIL.Analysis.FSRCheck
+
 -- Standard library
 import AIL.Lib.PIC18.RingBuf
 import AIL.Lib.PIC18.INTCON

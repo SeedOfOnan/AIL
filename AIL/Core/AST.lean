@@ -197,12 +197,16 @@ inductive ProcBody where
                    will migrate to typed Insn nodes once the emitter stabilises).
       reads  are hashes of formal/data/peripheral nodes this intrinsic reads.
       writes are hashes of formal/data/peripheral nodes this intrinsic writes.
-      obligations are agent-asserted correctness strings. -/
+      obligations are agent-asserted correctness strings.
+      fsrUse  is the set of FSR indices (0=FSR0, 1=FSR1, 2=FSR2) this intrinsic
+              claims. Used by the FSR conflict checker (AIL#13) to detect when
+              an ISR-reachable intrinsic and a main-reachable intrinsic share an FSR. -/
   | intrinsic
       (instructions : Array String)
       (reads        : Array Hash)
       (writes       : Array Hash)
       (obligations  : Array String)
+      (fsrUse       : Array UInt8)
 
 deriving Repr
 

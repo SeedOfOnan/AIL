@@ -43,6 +43,9 @@ private def serStr (s : String) : ByteArray :=
 private def serHashes (hs : Array Hash) : ByteArray :=
   hs.foldl (fun acc h => acc ++ serHash h) (serU32 hs.size.toUInt32)
 
+private def serU8s (bs : Array UInt8) : ByteArray :=
+  bs.foldl (fun acc b => acc ++ serU8 b) (serU32 bs.size.toUInt32)
+
 private def serStrs (ss : Array String) : ByteArray :=
   ss.foldl (fun acc s => acc ++ serStr s) (serU32 ss.size.toUInt32)
 
@@ -113,9 +116,9 @@ private def serProcBody : ProcBody → ByteArray
       serU8 0x06 ++ serHash callee ++ serHashes args ++
       serHashes retBinds ++ serU8 callDepth
 
-  | .intrinsic instructions reads writes obligations =>
+  | .intrinsic instructions reads writes obligations fsrUse =>
       serU8 0x07 ++ serStrs instructions ++ serHashes reads ++
-      serHashes writes ++ serStrs obligations
+      serHashes writes ++ serStrs obligations ++ serU8s fsrUse
 
 -- ---------------------------------------------------------------------------
 -- Node serializer

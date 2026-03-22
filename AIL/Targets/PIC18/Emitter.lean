@@ -266,7 +266,7 @@ private def emitOp (ref : OpRef) (reads writes : Array Hash) : Emit Unit := do
       -- Obligations emitted as comments; instructions emitted verbatim via Insn.raw.
       -- Symbol names in instruction strings must use hashLabel format (_n<hash>).
       match ← lookupNode ih with
-      | Node.proc _ _ (ProcBody.intrinsic instructions _ _ obligations) label =>
+      | Node.proc _ _ (ProcBody.intrinsic instructions _ _ obligations _) label =>
           outComment s!" [intrinsic: {label}]"
           for obl in obligations do outComment s!"   obligation: {obl}"
           for insn in instructions do out (.raw insn)
@@ -399,7 +399,7 @@ partial def emitProcBody (params : Array Hash) (body : ProcBody) : Emit Unit := 
       if !(← wasVisited callee) then
         emitSubroutine callee
 
-  | ProcBody.intrinsic instructions _ _ obligations =>
+  | ProcBody.intrinsic instructions _ _ obligations _ =>
       -- Obligations emitted as comments; instructions emitted verbatim via Insn.raw.
       outComment " [intrinsic]"
       for obl in obligations do outComment s!"   obligation: {obl}"

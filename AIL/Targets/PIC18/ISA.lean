@@ -178,7 +178,7 @@ def renderInsn : Insn → String
 def nodeMovwf (hDst : Hash) (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.movwf (hashLabel hDst))] #[] #[hDst]
-                #[s!"WREG → {hashLabel hDst}"])
+                #[s!"WREG → {hashLabel hDst}"] #[])
     label
 
 /-- MOVF sym, W, c  —  f → WREG  (load file register into WREG).
@@ -186,7 +186,7 @@ def nodeMovwf (hDst : Hash) (label : String) : Node :=
 def nodeMovf_w (hSrc : Hash) (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.movf (hashLabel hSrc) .w)] #[hSrc] #[]
-                #[s!"{hashLabel hSrc} → WREG"])
+                #[s!"{hashLabel hSrc} → WREG"] #[])
     label
 
 /-- MOVF INDF0, W, c  —  *(FSR0) → WREG  (FSR0-indirect read).
@@ -194,7 +194,7 @@ def nodeMovf_w (hSrc : Hash) (label : String) : Node :=
 def nodeMovf_INDF0_w (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.movf "INDF0" .w)] #[] #[]
-                #["*(FSR0) → WREG"])
+                #["*(FSR0) → WREG"] #[0])
     label
 
 /-- MOVWF INDF0, c  —  WREG → *(FSR0)  (FSR0-indirect write).
@@ -202,7 +202,7 @@ def nodeMovf_INDF0_w (label : String) : Node :=
 def nodeMovwf_INDF0 (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.movwf "INDF0")] #[] #[]
-                #["WREG → *(FSR0)"])
+                #["WREG → *(FSR0)"] #[0])
     label
 
 /-- MOVWF INDF1, c  —  WREG → *(FSR1)  (FSR1-indirect write).
@@ -210,7 +210,7 @@ def nodeMovwf_INDF0 (label : String) : Node :=
 def nodeMovwf_INDF1 (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.movwf "INDF1")] #[] #[]
-                #["WREG → *(FSR1)"])
+                #["WREG → *(FSR1)"] #[1])
     label
 
 /-- ADDWF FSR0L, F, c  —  FSR0L += WREG  (advance FSR0 by index in WREG).
@@ -218,7 +218,7 @@ def nodeMovwf_INDF1 (label : String) : Node :=
 def nodeAddwf_FSR0L (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.addwf "FSR0L" .f)] #[] #[]
-                #["FSR0L += WREG"])
+                #["FSR0L += WREG"] #[0])
     label
 
 /-- ADDWF FSR1L, F, c  —  FSR1L += WREG  (advance FSR1 by index in WREG).
@@ -226,7 +226,7 @@ def nodeAddwf_FSR0L (label : String) : Node :=
 def nodeAddwf_FSR1L (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.addwf "FSR1L" .f)] #[] #[]
-                #["FSR1L += WREG"])
+                #["FSR1L += WREG"] #[1])
     label
 
 /-- LFSR 0, sym  —  FSR0 = address of hArr  (load FSR0 with array base address).
@@ -234,7 +234,7 @@ def nodeAddwf_FSR1L (label : String) : Node :=
 def nodeLfsr0 (hArr : Hash) (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.lfsr 0 (hashLabel hArr))] #[hArr] #[]
-                #[s!"FSR0 ← &{hashLabel hArr}"])
+                #[s!"FSR0 ← &{hashLabel hArr}"] #[0])
     label
 
 /-- LFSR 1, sym  —  FSR1 = address of hArr  (load FSR1 with array base address).
@@ -242,7 +242,7 @@ def nodeLfsr0 (hArr : Hash) (label : String) : Node :=
 def nodeLfsr1 (hArr : Hash) (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.lfsr 1 (hashLabel hArr))] #[hArr] #[]
-                #[s!"FSR1 ← &{hashLabel hArr}"])
+                #[s!"FSR1 ← &{hashLabel hArr}"] #[1])
     label
 
 /-- INCF sym, F, c  —  f += 1  (increment file register in place).
@@ -250,7 +250,7 @@ def nodeLfsr1 (hArr : Hash) (label : String) : Node :=
 def nodeIncf_f (hDst : Hash) (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.incf (hashLabel hDst) .f)] #[] #[hDst]
-                #[s!"{hashLabel hDst} += 1"])
+                #[s!"{hashLabel hDst} += 1"] #[])
     label
 
 /-- MOVLW k  —  k → WREG  (load literal into WREG).
@@ -258,7 +258,7 @@ def nodeIncf_f (hDst : Hash) (label : String) : Node :=
 def nodeMovlw (k : UInt8) (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.movlw k)] #[] #[]
-                #[s!"WREG ← {k}"])
+                #[s!"WREG ← {k}"] #[])
     label
 
 /-- ANDWF sym, F, c  —  f &= WREG  (mask file register in place).
@@ -266,7 +266,7 @@ def nodeMovlw (k : UInt8) (label : String) : Node :=
 def nodeAndwf_f (hDst : Hash) (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.andwf (hashLabel hDst) .f)] #[] #[hDst]
-                #[s!"{hashLabel hDst} &= WREG"])
+                #[s!"{hashLabel hDst} &= WREG"] #[])
     label
 
 /-- SETF sym, c  —  f = 0xFF  (set all bits of file register).
@@ -274,7 +274,7 @@ def nodeAndwf_f (hDst : Hash) (label : String) : Node :=
 def nodeSetf (hDst : Hash) (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.setf (hashLabel hDst))] #[] #[hDst]
-                #[s!"{hashLabel hDst} ← 0xFF"])
+                #[s!"{hashLabel hDst} ← 0xFF"] #[])
     label
 
 /-- CLRF sym, c  —  f = 0x00  (clear file register).
@@ -282,7 +282,7 @@ def nodeSetf (hDst : Hash) (label : String) : Node :=
 def nodeClrf (hDst : Hash) (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.clrf (hashLabel hDst))] #[] #[hDst]
-                #[s!"{hashLabel hDst} ← 0x00"])
+                #[s!"{hashLabel hDst} ← 0x00"] #[])
     label
 
 /-- RETFIE [fast]  —  return from interrupt handler.
@@ -291,7 +291,7 @@ def nodeClrf (hDst : Hash) (label : String) : Node :=
 def nodeRetfie (fast : Bool) (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.retfie fast)] #[] #[]
-                #[if fast then "retfie FAST (shadow registers)" else "retfie 0"])
+                #[if fast then "retfie FAST (shadow registers)" else "retfie 0"] #[])
     label
 
 /-- CPFSEQ sym, c  —  skip next instruction if f == WREG.
@@ -302,7 +302,7 @@ def nodeRetfie (fast : Bool) (label : String) : Node :=
 def nodeCpfseq (hSrc : Hash) (label : String) : Node :=
   .proc #[] #[]
     (.intrinsic #[renderInsn (.cpfseq (hashLabel hSrc))] #[hSrc] #[]
-                #[s!"skip if {hashLabel hSrc} == WREG (condition: equal = TRUE)"])
+                #[s!"skip if {hashLabel hSrc} == WREG (condition: equal = TRUE)"] #[])
     label
 
 end AIL.PIC18

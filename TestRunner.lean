@@ -398,14 +398,14 @@ def ex06_uart_rx : Example :=
   -- The Never semantics are implicit: bra L_panic never returns.
   let n_panic : Node := .proc #[] #[]
     (.intrinsic #["L_panic:", "    bra     L_panic"] #[] #[]
-                #["halt: never returns"]) "panic"
+                #["halt: never returns"] #[]) "panic"
   let h_panic := hashNode n_panic
 
   -- early_retfie: return from ISR without continuing the handler body.
   -- Used after FERR discard and after ring-buffer-full detection.
   let n_early_retfie : Node := .proc #[] #[]
     (.intrinsic #["    retfie  0"] #[] #[]
-                #["early ISR exit"]) "early_retfie"
+                #["early ISR exit"] #[]) "early_retfie"
   let h_early_retfie := hashNode n_early_retfie
 
   -- discard_rcreg: MOVF RCREG, W — reads RCREG solely to advance the hardware
@@ -468,7 +468,7 @@ def ex06_uart_rx : Example :=
         "    andlw   0x1f",
         s!"    cpfseq  {hashLabel h_rx_head}, c"]
       #[h_rx_head, h_rx_tail] #[]
-      #["condition: (tail+1)&31 == head (buffer full)"]) "test_is_full"
+      #["condition: (tail+1)&31 == head (buffer full)"] #[]) "test_is_full"
   let h_test_is_full := hashNode n_test_is_full
 
   -- set_overrun_and_retfie: set the overrun flag and exit ISR (drop the byte).
@@ -477,7 +477,7 @@ def ex06_uart_rx : Example :=
       #[s!"    setf    {hashLabel h_rx_overrun}, c",
         "    retfie  0"]
       #[] #[h_rx_overrun]
-      #["set overrun flag; drop received byte; exit ISR"]) "set_overrun"
+      #["set overrun flag; drop received byte; exit ISR"] #[]) "set_overrun"
   let h_set_overrun := hashNode n_set_overrun
 
   -- do_push: write WREG (received byte) to buf[tail] via indexStore, then
@@ -496,7 +496,7 @@ def ex06_uart_rx : Example :=
         "    movlw   0x1f",
         s!"    andwf   {hashLabel h_rx_tail}, f, c"]
       #[h_rx_tail] #[h_rx_tail]
-      #["advance tail mod 32"]) "advance_tail"
+      #["advance tail mod 32"] #[]) "advance_tail"
   let h_advance_tail := hashNode n_advance_tail
   let n_do_push : Node := .proc #[] #[]
     (.seq #[h_push_store, h_advance_tail]) "do_push"
@@ -570,7 +570,7 @@ def ex08_ringbuf : Example :=
     let h_overrun     ← StoreM.node (.data .data .w8 0x33 "rb_overrun")
     let h_set_overrun ← StoreM.node (.proc #[] #[]
       (.intrinsic #[s!"    setf    {hashLabel h_overrun}, c"] #[] #[h_overrun]
-                  #["mark buffer overrun"]) "rb_set_overrun")
+                  #["mark buffer overrun"] #[]) "rb_set_overrun")
     let _h_nop        ← StoreM.node (.proc #[] #[] (.seq #[]) "nop")
     let h_if_full     ← StoreM.node (.proc #[] #[]
       (.cond rb.h_is_full h_set_overrun rb.h_push) "rb_if_full")
@@ -655,7 +655,7 @@ def ex09_main_loop : Example :=
         #[s!"    movf    {hashLabel rb.h_tail}, w, c",
           s!"    cpfseq  {hashLabel rb.h_head}, c"]
         #[rb.h_head, rb.h_tail] #[]
-        #["condition: head == tail (buffer empty)"])
+        #["condition: head == tail (buffer empty)"] #[])
       "rx_is_empty")
   
     -- -------------------------------------------------------------------------
@@ -685,7 +685,7 @@ def ex09_main_loop : Example :=
           s!"    andwf   {hashLabel rb.h_head}, f, c"]
         #[rb.h_data, rb.h_head] #[rb.h_head, h_getch_result]
         #["pop buf[head] → getch_result; advance head mod 32",
-          "DESIGN GAP A: uses FSR0 — conflicts with ISR push (AIL#13, AIL#14)"])
+          "DESIGN GAP A: uses FSR0 — conflicts with ISR push (AIL#13, AIL#14)"] #[0])
       "rx_pop")
     let h_getch ← StoreM.node (.proc #[] #[h_getch_result]
       (.seq #[h_getch_spin, h_pop]) "getch")
@@ -727,12 +727,12 @@ def ex09_main_loop : Example :=
           s!"    incf    {hashLabel h_line_len}, f, c"]
         #[h_line_buf, h_line_len, h_getch_result] #[h_line_len]
         #["line_buf[line_len] = getch_result; line_len++",
-          "uses FSR1 (distinct from FSR0 used by pop/getch for ring buffer)"])
+          "uses FSR1 (distinct from FSR0 used by pop/getch for ring buffer)"] #[1])
       "append_line")
   
     let h_process_line ← StoreM.node (.proc #[] #[]
       (.intrinsic #[s!"    clrf    {hashLabel h_line_len}, c"] #[] #[h_line_len]
-                  #["stub: clear line buffer; TODO: implement line processing"])
+                  #["stub: clear line buffer; TODO: implement line processing"] #[])
       "process_line")
   
     let h_if_nl     ← StoreM.node (.proc #[] #[]
@@ -801,6 +801,78 @@ def runStaticAllocTest : IO Unit := do
   | .ok _    => IO.println   "  RamBudgetExceeded: FAIL (expected error but got ok)"
 
 -- ---------------------------------------------------------------------------
+-- Ex12: FSR conflict checker  (AIL#13)
+--
+-- Builds a minimal two-store scenario:
+--   ISR  (vec 1): one intrinsic using FSR0 (simulates ring-buffer push)
+--   Main (vec 0): one intrinsic using FSR0 (simulates pop — conflict!)
+--                 one intrinsic using FSR1 (append — no conflict)
+--
+-- Expected output:
+--   FSR conflict check: 1 conflict(s) found
+--   FSR0 conflict: ISR node ... ↔ main node ...      ← pop vs. push
+--   FSR1 check: PASS  (no conflict)
+-- ---------------------------------------------------------------------------
+
+def runFSRCheckTest : IO Unit := do
+  IO.println "=== Ex12: FSR conflict check  (AIL#13) ==="
+  let (_, store) := StoreM.run <| do
+    -- ISR side: intrinsic claiming FSR0 (ring-buffer push skeleton)
+    let _h_isr_push ← StoreM.node (.proc #[] #[]
+      (.intrinsic #["    lfsr    0, _buf", "    movwf   INDF0, c"] #[] #[]
+                  #["push byte via FSR0"] #[0])
+      "isr_push")
+    -- Main side: intrinsic claiming FSR0 (pop — conflict with isr_push)
+    let _h_main_pop ← StoreM.node (.proc #[] #[]
+      (.intrinsic #["    lfsr    0, _buf", "    movf    INDF0, w, c"] #[] #[]
+                  #["pop byte via FSR0"] #[0])
+      "main_pop")
+    -- Main side: intrinsic claiming FSR1 (append — no conflict)
+    let _h_main_append ← StoreM.node (.proc #[] #[]
+      (.intrinsic #["    lfsr    1, _line", "    movwf   INDF1, c"] #[] #[]
+                  #["append byte via FSR1"] #[1])
+      "main_append")
+    -- ISR proc: just the push
+    let h_isr_body ← StoreM.node (.proc #[] #[] (.seq #[_h_isr_push]) "isr")
+    -- Main proc: seq of pop and append
+    let h_main_body ← StoreM.node (.proc #[] #[] (.seq #[_h_main_pop, _h_main_append]) "main")
+    -- Return (isr_root, main_root) as a pair via a dummy proc — not needed;
+    -- we capture the store and look up both roots separately.
+    -- For this test we embed both hashes as seq steps of a top node.
+    StoreM.node (.proc #[] #[] (.seq #[h_isr_body, h_main_body]) "top")
+  -- The ISR root and main root are the two procs inside "top".
+  -- Re-run to get individual hashes for the checker.
+  let ((h_isr_root, h_main_root), store2) := StoreM.run <| do
+    let h_push ← StoreM.node (.proc #[] #[]
+      (.intrinsic #["    lfsr    0, _buf", "    movwf   INDF0, c"] #[] #[]
+                  #["push byte via FSR0"] #[0])
+      "isr_push")
+    let h_pop ← StoreM.node (.proc #[] #[]
+      (.intrinsic #["    lfsr    0, _buf", "    movf    INDF0, w, c"] #[] #[]
+                  #["pop byte via FSR0"] #[0])
+      "main_pop")
+    let h_append ← StoreM.node (.proc #[] #[]
+      (.intrinsic #["    lfsr    1, _line", "    movwf   INDF1, c"] #[] #[]
+                  #["append byte via FSR1"] #[1])
+      "main_append")
+    let h_isr   ← StoreM.node (.proc #[] #[] (.seq #[h_push])          "isr")
+    let h_main  ← StoreM.node (.proc #[] #[] (.seq #[h_pop, h_append]) "main")
+    pure (h_isr, h_main)
+  let _ := store  -- suppress unused warning
+  let conflicts := FSRCheck.check store2 #[h_isr_root] #[h_main_root]
+  -- Expected: 1 conflict (FSR0 between push and pop); FSR1 is clean.
+  let fsr0conflicts := conflicts.filter (·.fsr == 0)
+  let fsr1conflicts := conflicts.filter (·.fsr == 1)
+  IO.println s!"  FSR conflict check: {conflicts.size} conflict(s) found"
+  for c in conflicts do
+    IO.println s!"  {FSRCheck.renderConflict c}"
+  let fsr0ok := fsr0conflicts.size == 1
+  let fsr1ok := fsr1conflicts.isEmpty
+  let pass := "PASS"; let fail := "FAIL"
+  IO.println s!"  FSR0 conflict: {if fsr0ok then pass else fail}"
+  IO.println s!"  FSR1 clean:    {if fsr1ok then pass else fail}"
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
@@ -812,4 +884,6 @@ def main : IO Unit := do
     runExample ex
     IO.println ""
   runStaticAllocTest
+  IO.println ""
+  runFSRCheckTest
   IO.println ""

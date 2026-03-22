@@ -147,12 +147,12 @@ inductive ProcBodyOk (cfg : TargetConfig) (env : TyEnv) :
   /-- intrinsic: reads and writes must resolve. -/
   | intrinsic_ok
       (instructions : Array String)
-      (reads writes  : Array Hash) (obligations : Array String)
+      (reads writes  : Array Hash) (obligations : Array String) (fsrUse : Array UInt8)
       (readTys writeTys : List Ty)
       (hreads  : resolveAll env reads  = some readTys)
       (hwrites : resolveAll env writes = some writeTys) :
       ProcBodyOk cfg env
-        (ProcBody.intrinsic instructions reads writes obligations)
+        (ProcBody.intrinsic instructions reads writes obligations fsrUse)
         readTys writeTys 0
 
 -- ---------------------------------------------------------------------------
@@ -243,7 +243,7 @@ def inferBodyDepth (cfg : TargetConfig) (env : TyEnv) (b : ProcBody) : Option Na
           if total ≤ cfg.maxCallDepth then some total else none
       | _ => none
 
-  | ProcBody.intrinsic _ reads writes _ => do
+  | ProcBody.intrinsic _ reads writes _ _ => do
       let _ ← resolveAll env reads
       let _ ← resolveAll env writes
       some 0
