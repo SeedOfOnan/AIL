@@ -13,6 +13,7 @@
 
 import AIL
 import AIL.Targets.PIC18.Emitter
+import AIL.Targets.PIC18.Capabilities
 
 open AIL AIL.PIC18
 
@@ -941,6 +942,49 @@ def runDiagnosticsTest : IO Unit := do
       IO.println s!"  ReadClearsUnacked: {if ok then pass else fail}"
 
 -- ---------------------------------------------------------------------------
+-- Ex14: Capability record  (AIL#17)
+--
+-- Verifies that pic18Capabilities.toJson produces well-formed JSON with the
+-- expected keys and at least one known entry in each array.
+--
+-- Checks:
+--   1. JSON contains "schemaVersion"
+--   2. JSON contains "target":"pic18"
+--   3. procBodyForms includes "atomic" and "intrinsic"
+--   4. abstractOps  includes "load" and "movImm"
+--   5. nodeTypes    includes "proc"
+--   6. limitations  is non-empty
+-- ---------------------------------------------------------------------------
+
+-- strHas: true iff `sub` appears in `s`.
+-- Uses splitOn: a single-element result means no split occurred (sub absent).
+private def strHas (s sub : String) : Bool :=
+  match s.splitOn sub with
+  | [_] => false
+  | _   => true
+
+def runCapabilityTest : IO Unit := do
+  IO.println "=== Ex14: Capability record  (AIL#17) ==="
+  let pass := "PASS"; let fail := "FAIL"
+  let r   := pic18Capabilities
+  let js  := r.toJson
+  IO.println s!"  JSON: {js}"
+  let chk1 : Bool := strHas js "\"schemaVersion\""
+  let chk2 : Bool := strHas js "\"target\":\"pic18\""
+  let chk3 : Bool := r.procBodyForms.any (· == "atomic")
+                  && r.procBodyForms.any (· == "intrinsic")
+  let chk4 : Bool := r.abstractOps.any (· == "load")
+                  && r.abstractOps.any (· == "movImm")
+  let chk5 : Bool := r.nodeTypes.any (· == "proc")
+  let chk6 : Bool := !r.limitations.isEmpty
+  IO.println s!"  schemaVersion key present        : {if chk1 then pass else fail}"
+  IO.println s!"  target=pic18                     : {if chk2 then pass else fail}"
+  IO.println s!"  procBodyForms (atomic,intrinsic) : {if chk3 then pass else fail}"
+  IO.println s!"  abstractOps (load,movImm)        : {if chk4 then pass else fail}"
+  IO.println s!"  nodeTypes (proc)                 : {if chk5 then pass else fail}"
+  IO.println s!"  limitations non-empty            : {if chk6 then pass else fail}"
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
@@ -956,4 +1000,6 @@ def main : IO Unit := do
   runFSRCheckTest
   IO.println ""
   runDiagnosticsTest
+  IO.println ""
+  runCapabilityTest
   IO.println ""

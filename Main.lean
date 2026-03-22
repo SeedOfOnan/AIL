@@ -1,8 +1,19 @@
 -- ailc: AIL compiler entry point
--- Currently: emits PIC18 assembly for a hardcoded test store to stdout.
--- Usage: lake exe ailc > output.s
+--
+-- Subcommands:
+--   (none)                          — emit PIC18 assembly for the built-in
+--                                     test store to stdout (development aid)
+--   capabilities                    — print the PIC18 capability record as JSON
+--   capabilities --target pic18     — same (pic18 is the only target so far)
+--   capabilities --target pic18 --format json  — same
+--
+-- Usage:
+--   lake exe ailc                   -- emit test store assembly to stdout
+--   lake exe ailc capabilities      -- print capabilities JSON to stdout
+
 import AIL
 import AIL.Targets.PIC18.Emitter
+import AIL.Targets.PIC18.Capabilities
 
 open AIL AIL.PIC18
 
@@ -59,11 +70,11 @@ private def buildTestStore : Store × Array IVTEntry :=
   let ivt     : Array IVTEntry := #[(0, h_reset)]
   (store, ivt)
 
-def main : IO Unit := do
+private def runEmit : IO Unit := do
   let (store, ivt) := buildTestStore
   match checkStore targetConfig store with
-  | .error (_, badHash) =>
-      IO.eprintln s!"ailc: type error at hash {badHash}"
+  | .error diag =>
+      IO.eprintln s!"ailc: type error: {diag.toJson}"
       IO.Process.exit 1
   | .ok tyEnv =>
   -- Report inferred types to stderr.
@@ -87,3 +98,22 @@ def main : IO Unit := do
       IO.println "    global  _ail_vec0"
       for line in lines do
         IO.println line
+
+-- ---------------------------------------------------------------------------
+-- CLI entry point
+-- ---------------------------------------------------------------------------
+
+def main (args : List String) : IO Unit :=
+  match args with
+  | "capabilities" :: rest =>
+      -- R5.6: machine-queryable capability boundary.
+      -- Accepts optional --target pic18 and --format json (currently only
+      -- pic18 exists, so all three forms print the same record).
+      let targetOk := rest == [] || rest == ["--target", "pic18"] ||
+                      rest == ["--target", "pic18", "--format", "json"]
+      if targetOk then
+        IO.println pic18Capabilities.toJson
+      else
+        IO.eprintln "ailc: unknown target or format" *> IO.Process.exit 1
+  | _ =>
+      runEmit
