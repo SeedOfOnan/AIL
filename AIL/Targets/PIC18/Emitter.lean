@@ -63,6 +63,10 @@ structure EmitState where
   /-- Named roots: when a hash appears here, its name is emitted as a label
       alias alongside the hash label (AIL#25). -/
   nameTable      : NameTable := NameTable.empty
+  /-- Current BSR (Bank Select Register) value, if known (AIL#24).
+      `none` = unknown (e.g. at ISR entry or after a call that may change BSR).
+      The emitter tracks this to avoid redundant MOVLB instructions. -/
+  currentBSR     : Option UInt8 := none
 
 /-- The emitter monad: mutable state + error reporting. -/
 abbrev Emit := StateT EmitState (Except String)
@@ -118,48 +122,86 @@ private def renderAddrSpace : AddrSpace → String
   | .sfr     => "sfr"
 
 -- ---------------------------------------------------------------------------
--- Address resolution
+-- Address resolution and bank-select (AIL#24)
 --
--- resolveAddr returns the assembly symbol name for a data or peripheral node,
--- declaring it as an EQU in the data section the first time it is seen.
+-- resolveAddr declares an EQU for a data/peripheral/staticArray node and
+-- returns (symbol, fullAddr).
 --
--- Symbol format: "_n<hash>"  — guaranteed unique, content-addressed.
--- EQU format:   _n<hash>  equ  <decimal-addr>  ; <label> (<width>, <space>)
+-- PIC18 Access Bank:
+--   0x00–0xFF — directly accessible with ',c' qualifier; no BSR needed.
+-- Banked GPR (address >= 0x100):
+--   bank   = (addr >> 8) & 0xF  — selects BSR value (MOVLB)
+--   offset = addr & 0xFF         — 8-bit file register offset within the bank
+--   EQU declares the offset so instruction operands are in range.
+--   The full address is preserved in the EQU comment.
 --
--- Q71 Access Bank layout (DS40002329F §9.4.2):
---   Addresses 0x00–0x5F  →  GPR Bank 5, physical 0x0500–0x055F
---   Addresses 0x60–0xFF  →  SFR Bank 4, physical 0x0460–0x04FF
---
--- Nodes with addresses outside the Access Bank require MOVLB + BANKED mode.
--- TODO: implement full address-to-bank-offset translation and emit MOVLB.
+-- emitBankSelect: given a full address, emits MOVLB if BSR doesn't match,
+-- updates EmitState.currentBSR, and returns the appropriate access qualifier.
 -- ---------------------------------------------------------------------------
 
-private def resolveAddr (h : Hash) : Emit String := do
+/-- Resolve a data/peripheral/staticArray node to its assembly symbol.
+    Returns (symbol, fullAddr).  Declares the EQU in the data section
+    the first time this hash is seen.
+    For banked addresses (>= 0x100) the EQU holds the low byte (register
+    offset within the bank); the full address is noted in the comment. -/
+private def resolveAddr (h : Hash) : Emit (String × UInt32) := do
   let sym := hashLabel h
   -- Only add to data section once per hash.
-  if (← get).declaredHashes.contains h then
-    return sym
+  if (← get).declaredHashes.contains h then do
+    -- Still need to return the address.
+    let addr : UInt32 ← match ← lookupNode h with
+      | Node.data _ _ a _         => return (sym, a)
+      | Node.peripheral _ a _ _   => return (sym, a)
+      | Node.staticArray _ _ a _ _ => return (sym, a)
+      | _ => throw s!"emitter: hash {h} is not a data, peripheral, or staticArray node"
+    return (sym, addr)
   match ← lookupNode h with
   | Node.data addrSpace width addr lbl =>
-      let decl := s!"{sym}\tequ\t{addr.toNat}\t; {lbl} ({renderWidth width}, {renderAddrSpace addrSpace})"
+      let equVal := addr &&& 0xFF  -- low byte for banked; same as addr for access bank
+      let decl := s!"{sym}\tequ\t{equVal.toNat}\t; {lbl} ({renderWidth width}, {renderAddrSpace addrSpace})" ++
+                  (if addr.toNat >= 0x100 then s!" [full: 0x{String.ofList (Nat.toDigits 16 addr.toNat)}]" else "")
       modify fun s => { s with
         dataDecls      := s.dataDecls.push decl
         declaredHashes := s.declaredHashes.push h }
-      return sym
+      return (sym, addr)
   | Node.peripheral addrSpace addr _ lbl =>
-      let decl := s!"{sym}\tequ\t{addr.toNat}\t; sfr: {lbl} ({renderAddrSpace addrSpace})"
+      let equVal := addr &&& 0xFF
+      let decl := s!"{sym}\tequ\t{equVal.toNat}\t; sfr: {lbl} ({renderAddrSpace addrSpace})" ++
+                  (if addr.toNat >= 0x100 then s!" [full: 0x{String.ofList (Nat.toDigits 16 addr.toNat)}]" else "")
       modify fun s => { s with
         dataDecls      := s.dataDecls.push decl
         declaredHashes := s.declaredHashes.push h }
-      return sym
+      return (sym, addr)
   | Node.staticArray _ _ addr _ lbl =>
-      let decl := s!"{sym}\tequ\t{addr.toNat}\t; array base: {lbl}"
+      let equVal := addr &&& 0xFF
+      let decl := s!"{sym}\tequ\t{equVal.toNat}\t; array base: {lbl}" ++
+                  (if addr.toNat >= 0x100 then s!" [full: 0x{String.ofList (Nat.toDigits 16 addr.toNat)}]" else "")
       modify fun s => { s with
         dataDecls      := s.dataDecls.push decl
         declaredHashes := s.declaredHashes.push h }
-      return sym
+      return (sym, addr)
   | _ =>
       throw s!"emitter: hash {h} is not a data, peripheral, or staticArray node"
+
+/-- Emit MOVLB if the address is banked and BSR doesn't already point to the
+    correct bank.  Returns the XC8 access qualifier: "c" for access bank,
+    "b" for banked.  Updates EmitState.currentBSR. -/
+private def emitBankSelect (addr : UInt32) : Emit String := do
+  if addr.toNat < 0x100 then
+    return "c"   -- access bank: no MOVLB needed
+  else
+    let bank : UInt8 := ((addr >>> 8) &&& 0xF).toUInt8
+    let cur := (← get).currentBSR
+    if cur != some bank then
+      out (.movlb bank)
+      modify fun s => { s with currentBSR := some bank }
+    return "b"
+
+/-- Shorthand: resolve address + emit bank-select + return (symbol, qualifier). -/
+private def resolveWithBank (h : Hash) : Emit (String × String) := do
+  let (sym, addr) ← resolveAddr h
+  let qual ← emitBankSelect addr
+  return (sym, qual)
 
 -- ---------------------------------------------------------------------------
 -- Flag output support (AIL#31)
@@ -227,7 +269,7 @@ private def emitFlagSkip (testH : Hash) : Emit Unit := do
 private def resolveBitField (h : Hash) : Emit (String × UInt8) := do
   match ← lookupNode h with
   | Node.bitField regH bitPos _ =>
-      let sym ← resolveAddr regH
+      let (sym, _) ← resolveAddr regH
       return (sym, bitPos)
   | _ => throw s!"emitter: hash {h} is not a bitField node"
 
@@ -240,45 +282,47 @@ private def emitOp (ref : OpRef) (reads writes : Array Hash) : Emit Unit := do
   | .abstract op =>
       match op with
       | .load | .loadDiscard =>
-          -- MOVF src, W  — load byte to WREG.
+          -- MOVF src, W, c/b  — load byte to WREG.
           -- loadDiscard: same instruction; the distinction is in the type checker
           -- (load on a read_clears peripheral warns if result is untracked;
           --  loadDiscard suppresses that warning — explicit intentional discard).
-          let src ← resolveAddr (← reads[0]? |>.elim (throw "load: no source") pure)
-          out (.movf src .w)
+          -- Bank-select: for addresses >= 0x100, emit MOVLB and use banked mode (AIL#24).
+          let (src, qual) ← resolveWithBank (← reads[0]? |>.elim (throw "load: no source") pure)
+          out (.movf src .w (qual == "b"))
       | .store   =>
-          -- MOVWF dst  — WREG → dst  (caller loads WREG via a prior .load)
-          let dst ← resolveAddr (← writes[0]? |>.elim (throw "store: no dest") pure)
-          out (.movwf dst)
+          -- MOVWF dst, c/b  — WREG → dst  (caller loads WREG via a prior .load)
+          let (dst, qual) ← resolveWithBank (← writes[0]? |>.elim (throw "store: no dest") pure)
+          out (.movwf dst (qual == "b"))
       | .add     =>
-          -- ADDWF f, F  — f + WREG → f  (second operand already in WREG)
-          let f ← resolveAddr (← reads[0]? |>.elim (throw "add: no operand") pure)
+          -- ADDWF f, F  — f + WREG → f  (second operand already in WREG).
+          -- Access Bank only (arithmetic ops on banked RAM require future BANKSEL support).
+          let (f, _) ← resolveAddr (← reads[0]? |>.elim (throw "add: no operand") pure)
           out (.addwf f .f)
       | .sub     =>
-          let f ← resolveAddr (← reads[0]? |>.elim (throw "sub: no operand") pure)
+          let (f, _) ← resolveAddr (← reads[0]? |>.elim (throw "sub: no operand") pure)
           out (.subwf f .f)
       | .mul     =>
-          let f ← resolveAddr (← reads[0]? |>.elim (throw "mul: no operand") pure)
+          let (f, _) ← resolveAddr (← reads[0]? |>.elim (throw "mul: no operand") pure)
           out (.mulwf f)
       | .and     =>
-          let f ← resolveAddr (← reads[0]? |>.elim (throw "and: no operand") pure)
+          let (f, _) ← resolveAddr (← reads[0]? |>.elim (throw "and: no operand") pure)
           out (.andwf f .f)
       | .or      =>
-          let f ← resolveAddr (← reads[0]? |>.elim (throw "or: no operand") pure)
+          let (f, _) ← resolveAddr (← reads[0]? |>.elim (throw "or: no operand") pure)
           out (.iorwf f .f)
       | .xor     =>
-          let f ← resolveAddr (← reads[0]? |>.elim (throw "xor: no operand") pure)
+          let (f, _) ← resolveAddr (← reads[0]? |>.elim (throw "xor: no operand") pure)
           out (.xorwf f .f)
       | .not     =>
-          let f ← resolveAddr (← reads[0]? |>.elim (throw "not: no operand") pure)
+          let (f, _) ← resolveAddr (← reads[0]? |>.elim (throw "not: no operand") pure)
           out (.comf f .f)
       | .shiftL  =>
           -- PIC18 has no barrel shifter; single-bit left rotate only.
           -- Multi-bit shifts must use multiple ops or an Intrinsic.
-          let f ← resolveAddr (← reads[0]? |>.elim (throw "shiftL: no operand") pure)
+          let (f, _) ← resolveAddr (← reads[0]? |>.elim (throw "shiftL: no operand") pure)
           out (.rlncf f .f)
       | .shiftR  =>
-          let f ← resolveAddr (← reads[0]? |>.elim (throw "shiftR: no operand") pure)
+          let (f, _) ← resolveAddr (← reads[0]? |>.elim (throw "shiftR: no operand") pure)
           out (.rrncf f .f)
       | .testBit =>
           -- BTFSS f, b  — skip next instruction if bit b of f is SET.
@@ -295,8 +339,8 @@ private def emitOp (ref : OpRef) (reads writes : Array Hash) : Emit Unit := do
           let (f, b) ← resolveBitField (← writes[0]? |>.elim (throw "clearBit: no bitField") pure)
           out (.bcf f b)
       | .compare =>
-          -- CPFSEQ f  — skip if f == WREG.
-          let f ← resolveAddr (← reads[0]? |>.elim (throw "compare: no operand") pure)
+          -- CPFSEQ f, c  — skip if f == WREG.
+          let (f, _) ← resolveAddr (← reads[0]? |>.elim (throw "compare: no operand") pure)
           out (.cpfseq f)
       | .indexLoad =>
           -- FSR0-indirect read: WREG = array[index].
@@ -306,8 +350,8 @@ private def emitOp (ref : OpRef) (reads writes : Array Hash) : Emit Unit := do
           -- ADDWF FSR0L,F → FSR0L += index  (assumes no carry into FSR0H)
           -- MOVF INDF0, W → WREG = *(FSR0)
           -- TODO: handle carry into FSR0H for arrays that cross a 256-byte boundary.
-          let arrSym ← resolveAddr (← reads[0]? |>.elim (throw "indexLoad: no array") pure)
-          let idxSym ← resolveAddr (← reads[1]? |>.elim (throw "indexLoad: no index") pure)
+          let (arrSym, _) ← resolveAddr (← reads[0]? |>.elim (throw "indexLoad: no array") pure)
+          let (idxSym, _) ← resolveAddr (← reads[1]? |>.elim (throw "indexLoad: no index") pure)
           out (.lfsr 0 arrSym)
           out (.movf idxSym .w)
           out (.addwf "FSR0L" .f)
@@ -323,8 +367,8 @@ private def emitOp (ref : OpRef) (reads writes : Array Hash) : Emit Unit := do
           -- TODO: caller must reload value into WREG after the index computation.
           --       This is a known limitation of the implicit WREG convention;
           --       resolves when SSA wiring tracks WREG explicitly.
-          let arrSym ← resolveAddr (← reads[0]? |>.elim (throw "indexStore: no array") pure)
-          let idxSym ← resolveAddr (← reads[1]? |>.elim (throw "indexStore: no index") pure)
+          let (arrSym, _) ← resolveAddr (← reads[0]? |>.elim (throw "indexStore: no array") pure)
+          let (idxSym, _) ← resolveAddr (← reads[1]? |>.elim (throw "indexStore: no index") pure)
           out (.lfsr 0 arrSym)
           out (.movf idxSym .w)
           out (.addwf "FSR0L" .f)
@@ -338,7 +382,7 @@ private def emitOp (ref : OpRef) (reads writes : Array Hash) : Emit Unit := do
           -- MOVLW k     — load the constant into WREG
           -- CPFSEQ f    — skip next instruction if f == WREG
           -- This is the skip-when-TRUE protocol; elseB/whileDone follows as the skipped insn.
-          let f ← resolveAddr (← reads[0]? |>.elim (throw "compareImm: no operand") pure)
+          let (f, _) ← resolveAddr (← reads[0]? |>.elim (throw "compareImm: no operand") pure)
           out (.movlw k)
           out (.cpfseq f)
   | .intrinsic ih =>
@@ -370,22 +414,22 @@ partial def emitNode (h : Hash) : Emit Unit := do
   | Node.data _ _ _ _ =>
       -- Ensure this node is declared in the data section (EQU).
       -- No code is emitted: a data node is a location, not a computation.
-      let _ ← resolveAddr h
+      let (_, _) ← resolveAddr h
 
   | Node.peripheral _ _ _ _ =>
       -- Ensure this SFR is declared in the data section (EQU).
       -- No code is emitted: peripheral nodes are address equates only.
-      let _ ← resolveAddr h
+      let (_, _) ← resolveAddr h
 
   | Node.staticArray _ _ _ _ _ =>
       -- Declare the array base address as an EQU in the data section.
       -- No code emitted: a staticArray is a location, not a computation.
-      let _ ← resolveAddr h
+      let (_, _) ← resolveAddr h
 
   | Node.bitField regH _ _ =>
       -- Ensure the parent register is declared in the data section.
       -- No code emitted: a bitField is a location, not a computation.
-      let _ ← resolveAddr regH
+      let (_, _) ← resolveAddr regH
 
   | Node.formal _ _ =>
       -- Formal nodes are typed placeholders; no code emitted.
@@ -433,7 +477,7 @@ partial def emitProcBody (params : Array Hash) (body : ProcBody) : Emit Unit := 
       let boundH ← match params[0]? with
         | some h => pure h
         | none   => throw "emitter: ProcBody.loop proc has no params[0] (loop bound)"
-      let addr ← resolveAddr boundH
+      let (addr, _) ← resolveAddr boundH
       out (.lbl lblTop)
       emitNode body
       out (.decfsz addr .f)    -- decrement; skip BRA when bound reaches 0

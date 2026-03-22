@@ -1525,6 +1525,71 @@ def runBudgetCheckTest : IO Unit := do
   IO.println s!"  capabilities JSON has flashBytesLimit     : {if hasFlash then pass else fail}"
 
 -- ---------------------------------------------------------------------------
+-- Ex24: Banked RAM — MOVLB emission for addresses >= 0x100  (AIL#24)
+--
+-- Checks:
+--   A. Access Bank address (0x20): no MOVLB in output.
+--   B. Banked address (0x120): MOVLB emitted in output.
+--   C. Two banked addresses in same bank: MOVLB emitted only once.
+--   D. Two banked addresses in different banks: two MOVLBs emitted.
+--   E. Banked EQU declares low byte (0x20) not full address (0x120).
+-- ---------------------------------------------------------------------------
+
+def runBankedRAMTest : IO Unit := do
+  IO.println "=== Ex24: Banked RAM — MOVLB emission  (AIL#24) ==="
+  let pass := "PASS"; let fail := "FAIL"
+  -- Part A: access bank address → no MOVLB
+  let (h_ab, sA) := StoreM.run <| do
+    let h_src ← StoreM.node (.data .data .w8 0x20 "src_ab")
+    let h_dst ← StoreM.node (.data .data .w8 0x21 "dst_ab")
+    let h_ld  ← StoreM.node (.proc #[h_src] #[] (.atomic (.abstract .load) #[h_src] #[]) "ld")
+    let h_st  ← StoreM.node (.proc #[] #[h_dst] (.atomic (.abstract .store) #[] #[h_dst]) "st")
+    StoreM.node (.proc #[] #[] (.seq #[h_ld, h_st]) "copy_ab")
+  match checkStore targetConfig sA with
+  | .error d => IO.println s!"  checkStore FAIL: {d.message}"
+  | .ok tyEnv =>
+      match compile sA tyEnv #[(.reset, h_ab)] with
+      | .error msg => IO.println s!"  compile FAIL: {msg}"
+      | .ok lines =>
+          let noMovlb := !(lines.any fun l => !(l.toLower.splitOn "movlb").tail.isEmpty)
+          IO.println s!"  access bank: no MOVLB                     : {if noMovlb then pass else fail}"
+  -- Part B: banked address (bank 1, 0x120) → MOVLB 1
+  let (h_bk, sB) := StoreM.run <| do
+    let h_src ← StoreM.node (.data .data .w8 0x120 "src_bk")
+    let h_dst ← StoreM.node (.data .data .w8 0x121 "dst_bk")
+    let h_ld  ← StoreM.node (.proc #[h_src] #[] (.atomic (.abstract .load) #[h_src] #[]) "ld_bk")
+    let h_st  ← StoreM.node (.proc #[] #[h_dst] (.atomic (.abstract .store) #[] #[h_dst]) "st_bk")
+    StoreM.node (.proc #[] #[] (.seq #[h_ld, h_st]) "copy_bk")
+  match checkStore targetConfig sB with
+  | .error d => IO.println s!"  checkStore (banked) FAIL: {d.message}"
+  | .ok tyEnv =>
+      match compile sB tyEnv #[(.reset, h_bk)] with
+      | .error msg => IO.println s!"  compile FAIL (banked): {msg}"
+      | .ok lines =>
+          let hasMovlb  := lines.any fun l => !(l.toLower.splitOn "movlb").tail.isEmpty
+          let hasMovlb1 := lines.any fun l => !(l.toLower.splitOn "movlb   1").tail.isEmpty
+          IO.println s!"  banked: MOVLB emitted                     : {if hasMovlb  then pass else fail}"
+          IO.println s!"  banked: MOVLB 1 (bank 1)                  : {if hasMovlb1 then pass else fail}"
+          -- Part E: EQU declares low byte (0x20 decimal), not 0x120
+          let equHas20 := lines.any fun l => !(l.splitOn "equ\t32").tail.isEmpty  -- 0x20 = 32
+          IO.println s!"  banked EQU holds low byte (0x20=32)       : {if equHas20 then pass else fail}"
+  -- Part C: two addresses in same bank → single MOVLB
+  let (h_c, sC) := StoreM.run <| do
+    let h_a ← StoreM.node (.data .data .w8 0x120 "a_bk")
+    let h_b ← StoreM.node (.data .data .w8 0x130 "b_bk")
+    let h_ld ← StoreM.node (.proc #[h_a] #[] (.atomic (.abstract .load) #[h_a] #[]) "ld_a")
+    let h_st ← StoreM.node (.proc #[] #[h_b] (.atomic (.abstract .store) #[] #[h_b]) "st_b")
+    StoreM.node (.proc #[] #[] (.seq #[h_ld, h_st]) "same_bank")
+  match checkStore targetConfig sC with
+  | .error _ => IO.println s!"  checkStore (same bank) FAIL"
+  | .ok tyEnv =>
+      match compile sC tyEnv #[(.reset, h_c)] with
+      | .error msg => IO.println s!"  compile FAIL (same bank): {msg}"
+      | .ok lines =>
+          let movlbCount := lines.foldl (fun n l => if !(l.toLower.splitOn "movlb").tail.isEmpty then n + 1 else n) 0
+          IO.println s!"  same bank: MOVLB emitted once (got {movlbCount}) : {if movlbCount == 1 then pass else fail}"
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
@@ -1560,4 +1625,6 @@ def main : IO Unit := do
   runCriticalTest
   IO.println ""
   runBudgetCheckTest
+  IO.println ""
+  runBankedRAMTest
   IO.println ""

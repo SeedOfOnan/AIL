@@ -51,8 +51,8 @@ inductive Dest where
     TODO: extend to banked addresses (BANKMASK + BSR management). -/
 inductive Insn where
   -- Byte-oriented file register operations
-  | movwf  (f : String)              -- MOVWF f, c   ; WREG → f
-  | movf   (f : String) (d : Dest)   -- MOVF  f, d   ; f → d
+  | movwf  (f : String) (banked : Bool := false)            -- MOVWF f, c/b ; WREG → f
+  | movf   (f : String) (d : Dest) (banked : Bool := false) -- MOVF  f, d, c/b ; f → d
   | movlw  (k : UInt8)               -- MOVLW k      ; k → WREG
   | addlw  (k : UInt8)               -- ADDLW k      ; WREG += k
   | andlw  (k : UInt8)               -- ANDLW k      ; WREG &= k
@@ -88,6 +88,8 @@ inductive Insn where
   | bra    (lbl : String)           -- BRA   label       ; short relative branch
   | return_                         -- RETURN
   | retfie (fast : Bool)            -- RETFIE [FAST]     ; return from interrupt
+  -- Bank select
+  | movlb  (bank : UInt8)            -- MOVLB k      ; k → BSR (select GPR bank 0–15)
   -- FSR indirect
   | lfsr   (f : UInt8) (sym : String) -- LFSR FSRf, sym ; load FSR with 12-bit address literal
   -- Assembler pseudo-ops
@@ -122,8 +124,8 @@ def renderAccess : String := "c"  -- 'c' = Access Bank (unbanked); 'b' = banked
     Syntax follows MPLAB XC8 PIC Assembler User Guide (XC8 v3.x, LLVM backend).
     Operand style: ,w / ,f for destination; ,c for access bank (not ,0 / ,1 / ACCESS). -/
 def renderInsn : Insn → String
-  | .movwf  f     => s!"    movwf   {f}, {renderAccess}"
-  | .movf   f d   => s!"    movf    {f}, {renderDest d}, {renderAccess}"
+  | .movwf  f b   => s!"    movwf   {f}, {if b then "b" else renderAccess}"
+  | .movf   f d b => s!"    movf    {f}, {renderDest d}, {if b then "b" else renderAccess}"
   | .movlw  k     => s!"    movlw   {k}"
   | .addlw  k     => s!"    addlw   {k}"
   | .andlw  k     => s!"    andlw   {k}"
@@ -154,6 +156,7 @@ def renderInsn : Insn → String
   | .call   lbl   => s!"    call    {lbl}, 0"
   | .goto_  lbl   => s!"    goto    {lbl}"
   | .bra    lbl   => s!"    bra     {lbl}"
+  | .movlb  bank  => s!"    movlb   {bank}"
   | .lfsr   f sym => s!"    lfsr    {f}, {sym}"
   | .return_      => s!"    return"
   | .retfie true  => s!"    retfie  1"       -- FAST bit
