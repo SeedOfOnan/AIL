@@ -3,3 +3,8 @@
 *.olean.trace
 *.ilean
 *.olean.lock
+
+# Auth tokens — never commit these
+*token*.txt
+*_token
+*.token
