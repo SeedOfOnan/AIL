@@ -71,7 +71,7 @@ def ex01_copy : Example :=
   let s := Store.insert s           h_load  n_load
   let s := Store.insert s           h_stor  n_stor
   let s := Store.insert s           h_reset n_reset
-  { name := "Ex01: Copy byte  (src→dst)", store := s, ivt := #[(0, h_reset)] }
+  { name := "Ex01: Copy byte  (src→dst)", store := s, ivt := #[(.reset, h_reset)] }
 
 -- ---------------------------------------------------------------------------
 -- Ex02: Add in-place
@@ -101,7 +101,7 @@ def ex02_add : Example :=
   let s := Store.insert s           h_load  n_load
   let s := Store.insert s           h_add   n_add
   let s := Store.insert s           h_reset n_reset
-  { name := "Ex02: Add in-place  (b = a + b)", store := s, ivt := #[(0, h_reset)] }
+  { name := "Ex02: Add in-place  (b = a + b)", store := s, ivt := #[(.reset, h_reset)] }
 
 -- ---------------------------------------------------------------------------
 -- Ex03: Conditional copy
@@ -180,7 +180,7 @@ def ex03_cond : Example :=
   let s := Store.insert s           h_cond   n_cond
   let s := Store.insert s           h_reset  n_reset
   { name := "Ex03: Conditional copy  (if a==b: result=a else result=b)",
-    store := s, ivt := #[(0, h_reset)] }
+    store := s, ivt := #[(.reset, h_reset)] }
 
 -- ---------------------------------------------------------------------------
 -- Ex04: Counted loop
@@ -217,7 +217,7 @@ def ex04_loop : Example :=
   let s := Store.insert s           h_loop  n_loop
   let s := Store.insert s           h_reset n_reset
   { name := "Ex04: Counted loop  (decrement count to zero)",
-    store := s, ivt := #[(0, h_reset)] }
+    store := s, ivt := #[(.reset, h_reset)] }
 
 -- ---------------------------------------------------------------------------
 -- Ex05: Two IVT entries
@@ -266,7 +266,7 @@ def ex05_two_vec : Example :=
   let s := Store.insert s           h_reset  n_reset
   let s := Store.insert s           h_timer  n_timer
   { name := "Ex05: Two IVT entries  (reset + timer ISR)",
-    store := s, ivt := #[(0, h_reset), (1, h_timer)] }
+    store := s, ivt := #[(.reset, h_reset), (.hiISR, h_timer)] }
 
 -- ---------------------------------------------------------------------------
 -- Ex07: Indexed array copy
@@ -308,7 +308,7 @@ def ex07_index_copy : Example :=
   let s := Store.insert s           h_stor  n_stor
   let s := Store.insert s           h_reset n_reset
   { name := "Ex07: Indexed array copy  (dst = buf[idx])", store := s,
-    ivt  := #[(0, h_reset)] }
+    ivt  := #[(.reset, h_reset)] }
 
 -- ---------------------------------------------------------------------------
 -- Ex06: UART receive interrupt handler (PIC18, high-priority ISR)
@@ -549,7 +549,7 @@ def ex06_uart_rx : Example :=
   let s := Store.insert s           h_isr               n_isr
   { name  := "Ex06: UART receive ISR  (PIC18, high-priority vec 1)",
     store := s,
-    ivt   := #[(1, h_isr)] }
+    ivt   := #[(.hiISR, h_isr)] }
 
 -- ---------------------------------------------------------------------------
 -- Ex08: makeRingBuf library exercise
@@ -579,7 +579,7 @@ def ex08_ringbuf : Example :=
     StoreM.node (.proc #[] #[] (.seq #[h_if_full]) "rb_entry")
   let (h_entry, store) := StoreM.run build
   { name := "Ex08: makeRingBuf  (32-byte ring buffer library)", store,
-    ivt  := #[(0, h_entry)] }
+    ivt  := #[(.reset, h_entry)] }
 
 -- ---------------------------------------------------------------------------
 -- Ex09: Main loop — getch from ring buffer into line buffer until '\n'
@@ -742,7 +742,7 @@ def ex09_main_loop : Example :=
 
   let (h_main, store) := StoreM.run build
   { name := "Ex09: Main loop  (getch ring-buf → line buffer until '\\n')",
-    store, ivt := #[(0, h_main)] }
+    store, ivt := #[(.reset, h_main)] }
 
 -- ---------------------------------------------------------------------------
 -- Ex10: Critical section  (BCF INTCON.GIE / BSF INTCON.GIE)
@@ -770,7 +770,7 @@ def ex10_critical : Example :=
     StoreM.node (.proc #[] #[] (.seq #[h_crit]) "reset")
   let (h_reset, store) := StoreM.run build
   { name := "Ex10: Critical section  (BCF/BSF INTCON.GIE around copy)",
-    store, ivt := #[(0, h_reset)] }
+    store, ivt := #[(.reset, h_reset)] }
 
 -- ---------------------------------------------------------------------------
 -- Ex11: StaticAlloc — compiler-assigned RAM addresses (AIL#19)
@@ -1245,7 +1245,7 @@ def runFlagOutputTest : IO Unit := do
   | .error d =>
       IO.println s!"  compile emits btfss STATUS: FAIL (checkStore: {d.message})"
   | .ok tyEnv =>
-      match compile s18d tyEnv #[(0, h_cond_root)] with
+      match compile s18d tyEnv #[(.reset, h_cond_root)] with
       | .error msg =>
           IO.println s!"  compile emits btfss STATUS: FAIL (compile: {msg})"
       | .ok lines =>
@@ -1316,7 +1316,7 @@ def runCompareImmTest : IO Unit := do
   | .error d =>
       IO.println s!"  compile emits movlw+cpfseq: FAIL (checkStore: {d.message})"
   | .ok tyEnv =>
-      match compile s19d tyEnv #[(0, h_root)] with
+      match compile s19d tyEnv #[(.reset, h_root)] with
       | .error msg =>
           IO.println s!"  compile emits movlw+cpfseq: FAIL (compile: {msg})"
       | .ok lines =>

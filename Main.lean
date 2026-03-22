@@ -67,7 +67,7 @@ private def buildTestStore : Store × Array IVTEntry :=
   let store   := Store.insert store       h_stor  n_stor
   let store   := Store.insert store       h_reset n_reset
   -- IVT: vector 0 (reset) → h_reset
-  let ivt     : Array IVTEntry := #[(0, h_reset)]
+  let ivt     : Array IVTEntry := #[(.reset, h_reset)]
   (store, ivt)
 
 private def runEmit : IO Unit := do

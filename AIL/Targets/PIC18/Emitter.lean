@@ -492,13 +492,34 @@ end  -- mutual
 -- Top-level entry point
 -- ---------------------------------------------------------------------------
 
-/-- Interrupt vector table entry: (vector_number, proc_hash).
-    The proc must satisfy Ty.proc [] [] d with d ≤ cfg.maxCallDepth.
-    Vector numbering is target-specific; the emitter (Tier 1) interprets it.
-    For classic PIC18: 0 = reset (0x0000), 1 = hi-ISR (0x0008), 2 = lo-ISR (0x0018).
-    For PIC18F-Q71 VIC: 0x00–0x58 per DS40002329F Table 11-2.
-    Core carries no vector numbering — that lives here in the Tier 1 emitter. -/
-abbrev IVTEntry := UInt8 × Hash
+/-- Symbolic PIC18 interrupt vector names (AIL#32).
+    Classic PIC18: reset/hiISR/loISR map to vectors 0/1/2.
+    Q71 VIC: use vic n for arbitrary vector numbers 0x00–0x58.
+    Agents write .reset / .hiISR / .loISR rather than raw integers. -/
+inductive PIC18Vector where
+  | reset          -- vector 0: program entry point (PSECT at 0x0000)
+  | hiISR          -- vector 1: high-priority ISR (0x0008 on classic PIC18)
+  | loISR          -- vector 2: low-priority ISR  (0x0018 on classic PIC18)
+  | vic (n : UInt8) -- Q71 VIC: arbitrary vector number 0x00–0x58
+deriving Repr, BEq
+
+/-- Hardware vector number for linker/IVT addressing. -/
+def PIC18Vector.toVecNum : PIC18Vector → UInt8
+  | .reset  => 0
+  | .hiISR  => 1
+  | .loISR  => 2
+  | .vic n  => n
+
+/-- Symbolic name for comments and diagnostics. -/
+def PIC18Vector.name : PIC18Vector → String
+  | .reset  => "reset"
+  | .hiISR  => "hiISR"
+  | .loISR  => "loISR"
+  | .vic n  => s!"vic{n}"
+
+/-- Interrupt vector table entry: (symbolic vector, proc_hash).
+    The proc must satisfy Ty.proc [] [] d with d ≤ cfg.maxCallDepth. -/
+abbrev IVTEntry := PIC18Vector × Hash
 
 /-- Compile a program from the store to PIC18 assembly lines.
 
@@ -527,13 +548,14 @@ def compile (store : Store) (tyEnv : TyEnv) (ivt : Array IVTEntry)
   -- The hash label is also emitted so callees can CALL/GOTO by content address.
   let emitIVT : Emit Unit := do
     for (vec, h) in ivt do
+      let vecNum := vec.toVecNum
       if ← wasVisited h then
         -- Proc already emitted (shared across two vectors); emit a redirect.
-        out (.lbl s!"_ail_vec{vec}")
+        out (.lbl s!"_ail_vec{vecNum}")
         out (.goto_ (hashLabel h))
       else
         markVisited h
-        out (.lbl s!"_ail_vec{vec}")
+        out (.lbl s!"_ail_vec{vecNum}")
         out (.lbl (hashLabel h))
         emitNode h
         -- Suppress trailing RETURN if the proc never returns.
@@ -558,7 +580,7 @@ def compile (store : Store) (tyEnv : TyEnv) (ivt : Array IVTEntry)
   -- IVT summary as comments (hardware IVT section is a TODO).
   let ivtComments : Array String :=
     #["; --- IVT ---"] ++
-    ivt.map (fun (vec, h) => s!"; vec {vec} → {hashLabel h}") ++
+    ivt.map (fun (vec, h) => s!"; {vec.name} (vec {vec.toVecNum}) → {hashLabel h}") ++
     #[""]
   -- Code section: typed instructions rendered to assembly text.
   let codeLines := final.insns.map renderInsn
