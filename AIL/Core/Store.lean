@@ -5,45 +5,108 @@
 -- There are no files. There is no text. There is no parser.
 -- The store is the repository.
 --
--- BOOTSTRAP: Store is Array (Hash × Node) for simplicity.
--- TODO: replace with a proper persistent hash map before scale.
--- The interface (lookup / insert / empty) is stable; the representation is not.
+-- Representation (AIL#26): chaining hash map for O(1) expected lookup +
+-- insertion-ordered keys array for deterministic iteration (checkStore walks
+-- nodes in dependency order; output ordering must be deterministic).
+-- The public interface (lookup / insert / empty / contains / hashes) is stable.
+-- No external package dependency: the hash map is implemented inline.
 
 import AIL.Core.Hash
 import AIL.Core.AST
 
 namespace AIL
 
+-- ---------------------------------------------------------------------------
+-- StoreMap: simple chaining hash map  (AIL#26)
+--
+-- Fixed bucket count (power of 2); each bucket is a List (Hash × Node).
+-- Expected O(1) lookup and insert.  No resizing needed for bootstrap scale.
+-- ---------------------------------------------------------------------------
+
+private def storeMapBuckets : Nat := 1024  -- must be a power of 2
+private def storeMapMask    : UInt64 := 1023
+
+private def emptyBuckets : Array (List (Hash × Node)) :=
+  (List.replicate storeMapBuckets []).toArray
+
+/-- Internal chaining hash map for Store. -/
+private structure StoreMap where
+  buckets : Array (List (Hash × Node))
+  size    : Nat
+
+private def StoreMap.empty : StoreMap := { buckets := emptyBuckets, size := 0 }
+
+private def StoreMap.bucketIdx (h : Hash) : Nat :=
+  (h &&& storeMapMask).toNat
+
+private def StoreMap.find? (m : StoreMap) (h : Hash) : Option Node :=
+  let bucket := m.buckets[StoreMap.bucketIdx h]!
+  bucket.findSome? fun (k, v) => if k == h then some v else none
+
+private def StoreMap.contains (m : StoreMap) (h : Hash) : Bool :=
+  (m.find? h).isSome
+
+private def StoreMap.insert (m : StoreMap) (h : Hash) (n : Node) : StoreMap :=
+  let idx := StoreMap.bucketIdx h
+  let bucket := m.buckets[idx]!
+  -- Update existing entry if present; otherwise prepend a new one.
+  let (newBucket, wasNew) :=
+    if bucket.any (·.1 == h) then
+      (bucket.map fun (k, v) => if k == h then (k, n) else (k, v), false)
+    else
+      ((h, n) :: bucket, true)
+  { buckets := m.buckets.set! idx newBucket
+    size    := if wasNew then m.size + 1 else m.size }
+
+-- ---------------------------------------------------------------------------
+-- Store: public API
+-- ---------------------------------------------------------------------------
+
 /-- The content-addressed node store.
-    Maps Hash → Node. Representation is an opaque implementation detail. -/
-abbrev Store := Array (Hash × Node)
+    O(1) expected lookup via StoreMap; insertion-ordered keys for deterministic
+    iteration (checkStore, readClearsWarnings, etc.).  (AIL#26) -/
+structure Store where
+  /-- O(1) expected hash → node lookup. -/
+  hmap : StoreMap
+  /-- Insertion-ordered hashes for deterministic foldl/mapM. -/
+  keys : Array Hash
 
 namespace Store
 
-def empty : Store := #[]
+def empty : Store := { hmap := StoreMap.empty, keys := #[] }
 
-/-- Look up a node by its hash. Returns none if not present. -/
+/-- Look up a node by its hash. O(1) expected. -/
 def lookup (s : Store) (h : Hash) : Option Node :=
-  s.findSome? fun (k, v) => if k == h then some v else none
+  s.hmap.find? h
 
-/-- Insert a node with its hash. Last-write-wins on collision.
-    NOTE: callers are responsible for computing the correct hash.
-    TODO: enforce hash correctness via a proof obligation once
-          the real hash function is in place. -/
+/-- Insert a node with its hash.
+    Duplicate inserts update the value; the key is not added to the keys array
+    again (first-insertion order is preserved). -/
 def insert (s : Store) (h : Hash) (n : Node) : Store :=
-  s.push (h, n)
+  if s.hmap.contains h then
+    { s with hmap := s.hmap.insert h n }
+  else
+    { hmap := s.hmap.insert h n, keys := s.keys.push h }
 
-/-- Check whether a hash is present in the store. -/
+/-- Check whether a hash is present. O(1) expected. -/
 def contains (s : Store) (h : Hash) : Bool :=
-  s.any fun (k, _) => k == h
+  s.hmap.contains h
 
-/-- All hashes currently in the store. -/
-def hashes (s : Store) : Array Hash :=
-  s.map (·.1)
+/-- All hashes in insertion order. -/
+def hashes (s : Store) : Array Hash := s.keys
 
--- NOTE: use s.size directly for store size; no wrapper needed.
+/-- Number of nodes in the store. -/
+def size (s : Store) : Nat := s.keys.size
+
+/-- Convert to insertion-ordered (hash, node) pairs for iteration. -/
+def toArray (s : Store) : Array (Hash × Node) :=
+  s.keys.filterMap fun h => s.hmap.find? h |>.map (h, ·)
 
 end Store
+
+/-- Coerce Store to Array (Hash × Node) for iteration.
+    Existing call sites using `(s : Array (Hash × Node))` work unchanged. -/
+instance : Coe Store (Array (Hash × Node)) := ⟨Store.toArray⟩
 
 -- ---------------------------------------------------------------------------
 -- StoreM: builder monad for constructing a Store (AIL#18, AIL#31, R6.1–R6.2)
@@ -98,12 +161,12 @@ def nop : StoreM Hash :=
 
 /-- Run the builder starting from Store.empty. Returns (result, store). -/
 def run (m : StoreM α) : α × Store :=
-  let (result, s) := StateT.run m {}
+  let (result, s) := StateT.run m { store := Store.empty, nextUid := 0 }
   (result, s.store)
 
 /-- Run the builder starting from an existing store. Returns (result, store). -/
 def runFrom (s : Store) (m : StoreM α) : α × Store :=
-  let (result, s') := StateT.run m { store := s }
+  let (result, s') := StateT.run m { store := s, nextUid := 0 }
   (result, s'.store)
 
 end StoreM
