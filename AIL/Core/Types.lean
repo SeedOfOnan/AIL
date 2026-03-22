@@ -8,6 +8,7 @@
 import AIL.Core.Hash
 import AIL.Core.AST
 import AIL.Core.Store
+import AIL.Core.Diagnostic
 
 namespace AIL
 
@@ -277,12 +278,31 @@ theorem inferTy_complete (cfg : TargetConfig) (env : TyEnv) (n : Node) (t : Ty)
 -- Store-wide type checking
 -- ---------------------------------------------------------------------------
 
-def checkStore (cfg : TargetConfig) (s : Store) : Except (TyEnv × Hash) TyEnv :=
+/-- Extract the label of a node in the store.  Returns "(unknown)" if the hash
+    is absent or the node has no label field (e.g. formal nodes use uid). -/
+private def nodeLabel (s : Store) (h : Hash) : String :=
+  match s.lookup h with
+  | none => "(unknown)"
+  | some node => match node with
+      | Node.data _ _ _ lbl          => lbl
+      | Node.peripheral _ _ _ lbl    => lbl
+      | Node.formal uid _            => s!"formal_{uid}"
+      | Node.staticArray _ _ _ _ lbl => lbl
+      | Node.bitField _ _ lbl        => lbl
+      | Node.proc _ _ _ lbl          => lbl
+
+/-- Type-check all nodes in the store.
+    Returns the completed TyEnv on success, or a Diagnostic on the first
+    node that fails type inference (R5.3 — no cascade errors). -/
+def checkStore (cfg : TargetConfig) (s : Store) : Except Diagnostic TyEnv :=
   let arr : Array (Hash × Node) := s
   Array.foldlM (fun env (pair : Hash × Node) =>
     let (h, n) := pair
     match inferTy cfg env n with
-    | none   => throw (env, h)
+    | none   => throw { kind := .TypeCheckFailure, severity := .error,
+                        nodeHash := h,
+                        message := s!"type inference failed for node '{nodeLabel s h}'",
+                        fix := none }
     | some t => pure (fun h' => if h' == h then some t else env h')
   ) (fun _ => none) arr
 
@@ -300,10 +320,11 @@ def checkStore (cfg : TargetConfig) (s : Store) : Except (TyEnv × Hash) TyEnv :
 -- Does not fail: warnings are informational, not errors.
 -- ---------------------------------------------------------------------------
 
-/-- Return a warning string for each node that reads a read_clears peripheral
+/-- Return a Diagnostic for each node that reads a read_clears peripheral
     via AbstractOp.load without explicit discard acknowledgement.
-    Nodes using AbstractOp.loadDiscard are silently accepted. -/
-def readClearsWarnings (s : Store) : Array String :=
+    Nodes using AbstractOp.loadDiscard are silently accepted.
+    Each diagnostic includes a UseLoadDiscard fix suggestion (R5.5). -/
+def readClearsWarnings (s : Store) : Array Diagnostic :=
   (s : Array (Hash × Node)).foldl (fun acc (pair : Hash × Node) =>
     let (h, n) := pair
     match n with
@@ -316,7 +337,10 @@ def readClearsWarnings (s : Store) : Array String :=
         if offenders.isEmpty then acc
         else
           let regs := String.intercalate ", " offenders.toList
-          acc.push s!"warning: node '{label}' (hash {h}) reads read_clears register(s) [{regs}] via .load — use .loadDiscard to acknowledge intentional discard"
+          acc.push { kind := .ReadClearsUnacked, severity := .warning,
+                     nodeHash := h,
+                     message := s!"node '{label}' reads read_clears register(s) [{regs}] via .load — use .loadDiscard to acknowledge intentional discard",
+                     fix := some (.useLoadDiscard h) }
     | _ => acc
   ) #[]
 

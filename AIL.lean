@@ -6,6 +6,7 @@
 import AIL.Core.Hash
 import AIL.Core.AST
 import AIL.Core.Store
+import AIL.Core.Diagnostic
 import AIL.Core.Types
 import AIL.Core.StaticAlloc
 

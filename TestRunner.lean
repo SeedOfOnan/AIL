@@ -28,13 +28,14 @@ structure Example where
 def runExample (ex : Example) : IO Unit := do
   IO.println s!"=== {ex.name} ==="
   match checkStore targetConfig ex.store with
-  | .error (_, h) =>
-      IO.println s!"  checkStore: FAIL  (type error at hash {h})"
+  | .error diag =>
+      IO.println   "  checkStore: FAIL"
+      IO.println s!"  {diag.toJson}"
   | .ok tyEnv =>
       IO.println   "  checkStore: PASS"
       let warns := readClearsWarnings ex.store
       for w in warns do
-        IO.println s!"  {w}"
+        IO.println s!"  {w.toJson}"
       match compile ex.store tyEnv ex.ivt with
       | .error msg =>
           IO.println s!"  compile:    FAIL  ({msg})"
@@ -873,6 +874,73 @@ def runFSRCheckTest : IO Unit := do
   IO.println s!"  FSR1 clean:    {if fsr1ok then pass else fail}"
 
 -- ---------------------------------------------------------------------------
+-- Ex13: Structured diagnostics  (AIL#16)
+--
+-- Demonstrates that checkStore emits a Diagnostic (JSON) on failure and
+-- that readClearsWarnings emits structured records with fix suggestions.
+--
+-- Scenario A — TypeCheckFailure:
+--   A proc whose reads array contains a hash absent from the store.
+--   inferTy returns none → checkStore emits kind=TypeCheckFailure.
+--
+-- Scenario B — ReadClearsUnacked (already exercised by Ex06, now verified as
+--   structured JSON):
+--   A proc that reads a read_clears peripheral via .load.
+--   readClearsWarnings emits kind=ReadClearsUnacked with a UseLoadDiscard fix.
+--
+-- Expected for A:  "kind":"TypeCheckFailure", "severity":"error"
+-- Expected for B:  "kind":"ReadClearsUnacked", "severity":"warning",
+--                  "fix":{"UseLoadDiscard":...}
+-- ---------------------------------------------------------------------------
+
+def runDiagnosticsTest : IO Unit := do
+  IO.println "=== Ex13: Structured diagnostics  (AIL#16) ==="
+  let pass := "PASS"; let fail := "FAIL"
+  -- -------------------------------------------------------------------------
+  -- Scenario A: TypeCheckFailure — proc references a hash not in the store
+  -- -------------------------------------------------------------------------
+  let phantom_h : Hash := 0xDEADBEEFCAFE0001  -- deliberately absent
+  let (h_bad, s_bad) := StoreM.run <| do
+    let h ← StoreM.node (.proc #[] #[]
+      (.atomic (.abstract .load) #[phantom_h] #[]) "bad_load")
+    pure h
+  match checkStore targetConfig s_bad with
+  | .error diag =>
+      IO.println "  typecheck-fail diagnostic:"
+      IO.println s!"  {diag.toJson}"
+      let ok := diag.kind == DiagnosticKind.TypeCheckFailure
+              && diag.severity == Severity.error
+              && diag.nodeHash == h_bad
+      IO.println s!"  TypeCheckFailure: {if ok then pass else fail}"
+  | .ok _ =>
+      IO.println s!"  TypeCheckFailure: {fail}  (expected error, got ok)"
+  -- -------------------------------------------------------------------------
+  -- Scenario B: ReadClearsUnacked — load on a read_clears peripheral
+  -- -------------------------------------------------------------------------
+  let (h_load_b, s_b) := StoreM.run <| do
+    let h_reg ← StoreM.node (.peripheral .sfr 0x400
+      { readable := true, writable := false,
+        sideEffectOnRead := true, sideEffectOnWrite := false, accessWidth := .w8 }
+      "RC_REG")
+    let h ← StoreM.node (.proc #[] #[] (.atomic (.abstract .load) #[h_reg] #[]) "read_rc")
+    pure h
+  let warns_b := readClearsWarnings s_b
+  match warns_b[0]? with
+  | none =>
+      IO.println s!"  ReadClearsUnacked: {fail}  (no warnings emitted)"
+  | some diag =>
+      IO.println "  read-clears diagnostic:"
+      IO.println s!"  {diag.toJson}"
+      let fixOk := match diag.fix with
+        | some (FixSuggestion.useLoadDiscard h) => h == h_load_b
+        | _ => false
+      let ok := diag.kind == DiagnosticKind.ReadClearsUnacked
+              && diag.severity == Severity.warning
+              && diag.nodeHash == h_load_b
+              && fixOk
+      IO.println s!"  ReadClearsUnacked: {if ok then pass else fail}"
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
@@ -886,4 +954,6 @@ def main : IO Unit := do
   runStaticAllocTest
   IO.println ""
   runFSRCheckTest
+  IO.println ""
+  runDiagnosticsTest
   IO.println ""
