@@ -90,6 +90,12 @@ def freshFormal (kind : FormalKind) : StoreM Hash := do
   modify fun s => { s with nextUid := s.nextUid + 1 }
   node (.formal uid kind)
 
+/-- Insert a well-known no-op proc (empty seq) into the store.
+    Useful as a placeholder branch, default else-arm, or spin-wait body stub.
+    The label "nop" is excluded from identity, so all nop nodes share one hash. -/
+def nop : StoreM Hash :=
+  node (.proc #[] #[] (.seq #[]) "nop")
+
 /-- Run the builder starting from Store.empty. Returns (result, store). -/
 def run (m : StoreM α) : α × Store :=
   let (result, s) := StateT.run m {}

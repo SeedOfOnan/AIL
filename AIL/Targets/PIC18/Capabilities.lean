@@ -38,7 +38,8 @@ def pic18Capabilities : CapabilityRecord where
     "load", "loadDiscard", "store",
     "compare",
     "indexLoad", "indexStore",
-    "xorImm", "addImm", "andImm", "movImm"
+    "xorImm", "addImm", "andImm", "movImm",
+    "compareImm"
   ]
 
   nodeTypes := #[

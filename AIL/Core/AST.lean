@@ -115,10 +115,11 @@ inductive AbstractOp where
   -- Immediate (literal) operand operations — WREG op k → WREG.
   -- These carry the literal as part of the op, not as a node reference.
   -- reads and writes arrays are empty; all operands are encoded in the op.
-  | xorImm (k : UInt8)  -- XORLW k: WREG ^= k; sets Z, N flags
-  | addImm (k : UInt8)  -- ADDLW k: WREG += k; sets C, DC, Z, OV, N flags
-  | andImm (k : UInt8)  -- ANDLW k: WREG &= k; sets Z, N flags
-  | movImm (k : UInt8)  -- MOVLW k: WREG  = k; no flags affected
+  | xorImm    (k : UInt8)  -- XORLW k: WREG ^= k; sets Z, N flags
+  | addImm    (k : UInt8)  -- ADDLW k: WREG += k; sets C, DC, Z, OV, N flags
+  | andImm    (k : UInt8)  -- ANDLW k: WREG &= k; sets Z, N flags
+  | movImm    (k : UInt8)  -- MOVLW k: WREG  = k; no flags affected
+  | compareImm (k : UInt8) -- MOVLW k; CPFSEQ reads[0]: skip if reads[0] == k (AIL#33)
 deriving Repr, BEq, DecidableEq
 
 /-- Operation reference: abstract core op or a user-defined intrinsic (by hash). -/

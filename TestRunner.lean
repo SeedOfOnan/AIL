@@ -1255,6 +1255,77 @@ def runFlagOutputTest : IO Unit := do
           IO.println s!"  compile emits btfss STATUS            : {if hasBtfss then pass else fail}"
 
 -- ---------------------------------------------------------------------------
+-- Ex19: compareImm + StoreM.nop  (AIL#33 + AIL#35)
+--
+-- Part A — StoreM.nop:
+--   Call StoreM.nop twice; verify both calls return the same hash
+--   (nop is content-addressed: same body = same hash regardless of call count).
+--
+-- Part B — compareImm hash distinctness:
+--   compareImm 0x0a and compareImm 0x00 must have different hashes.
+--
+-- Part C — compareImm checkStore:
+--   Build proc [] [] (compareImm 0x0a) reads=[h_data]; checkStore PASS.
+--
+-- Part D — compareImm compiles to MOVLW + CPFSEQ:
+--   Build cond (compareImm 0x0a reads=[h_byte]) thenB elseB.
+--   Expected assembly contains "movlw" and "cpfseq".
+-- ---------------------------------------------------------------------------
+
+def runCompareImmTest : IO Unit := do
+  IO.println "=== Ex19: compareImm + StoreM.nop  (AIL#33 + AIL#35) ==="
+  let pass := "PASS"; let fail := "FAIL"
+  -- -------------------------------------------------------------------------
+  -- Part A — StoreM.nop
+  -- -------------------------------------------------------------------------
+  let ((h_nop1, h_nop2), _) := StoreM.run <| do
+    let a ← StoreM.nop
+    let b ← StoreM.nop
+    return (a, b)
+  IO.println s!"  StoreM.nop returns same hash each call    : {if h_nop1 == h_nop2 then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- Part B — compareImm hash distinctness
+  -- -------------------------------------------------------------------------
+  let n1 : Node := .proc #[] #[] (.atomic (.abstract (.compareImm 0x0a)) #[] #[]) ""
+  let n2 : Node := .proc #[] #[] (.atomic (.abstract (.compareImm 0x00)) #[] #[]) ""
+  let chkB : Bool := hashNode n1 != hashNode n2
+  IO.println s!"  compareImm 0x0a ≠ compareImm 0x00 (hash) : {if chkB then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- Part C — checkStore with compareImm
+  -- -------------------------------------------------------------------------
+  let (h_cmp_proc, s19) := StoreM.run <| do
+    let h_byte ← StoreM.node (.data .data .w8 0x20 "byte")
+    let h_bool ← StoreM.freshFormal .bool
+    StoreM.node (.proc #[] #[h_bool] (.atomic (.abstract (.compareImm 0x0a)) #[h_byte] #[]) "cmp_nl")
+  let chkC : Bool := match checkStore targetConfig s19 with
+    | .ok _ => true | .error _ => false
+  IO.println s!"  checkStore: proc with compareImm body     : {if chkC then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- Part D — compile emits movlw + cpfseq
+  -- -------------------------------------------------------------------------
+  let (h_root, s19d) := StoreM.run <| do
+    let h_byte  ← StoreM.node (.data .data .w8 0x20 "byte")
+    let h_bool  ← StoreM.freshFormal .bool
+    let h_test  ← StoreM.node (.proc #[] #[h_bool]
+                                 (.atomic (.abstract (.compareImm 0x0a)) #[h_byte] #[])
+                                 "cmp_nl")
+    let h_thenB ← StoreM.nop
+    let h_elseB ← StoreM.nop
+    StoreM.node (.proc #[] #[] (.cond h_test h_thenB h_elseB) "if_newline")
+  match checkStore targetConfig s19d with
+  | .error d =>
+      IO.println s!"  compile emits movlw+cpfseq: FAIL (checkStore: {d.message})"
+  | .ok tyEnv =>
+      match compile s19d tyEnv #[(0, h_root)] with
+      | .error msg =>
+          IO.println s!"  compile emits movlw+cpfseq: FAIL (compile: {msg})"
+      | .ok lines =>
+          let hasMovlw := lines.any fun l => !(l.toLower.splitOn "movlw").tail.isEmpty
+          let hasCpfseq := lines.any fun l => !(l.toLower.splitOn "cpfseq").tail.isEmpty
+          IO.println s!"  compile emits movlw                       : {if hasMovlw  then pass else fail}"
+          IO.println s!"  compile emits cpfseq                      : {if hasCpfseq then pass else fail}"
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
@@ -1280,4 +1351,6 @@ def main : IO Unit := do
   runWREGCheckTest
   IO.println ""
   runFlagOutputTest
+  IO.println ""
+  runCompareImmTest
   IO.println ""

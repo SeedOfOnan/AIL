@@ -104,10 +104,11 @@ private def serAbstractOpS : AbstractOp → ByteArray
   | .testBit     => serU8S  9  | .load        => serU8S 10  | .store       => serU8S 11
   | .compare     => serU8S 12  | .setBit      => serU8S 13  | .clearBit    => serU8S 14
   | .loadDiscard => serU8S 15  | .indexLoad   => serU8S 16  | .indexStore  => serU8S 17
-  | .xorImm k   => serU8S 18 ++ serU8S k
-  | .addImm k   => serU8S 19 ++ serU8S k
-  | .andImm k   => serU8S 20 ++ serU8S k
-  | .movImm k   => serU8S 21 ++ serU8S k
+  | .xorImm k    => serU8S 18 ++ serU8S k
+  | .addImm k    => serU8S 19 ++ serU8S k
+  | .andImm k    => serU8S 20 ++ serU8S k
+  | .movImm k    => serU8S 21 ++ serU8S k
+  | .compareImm k => serU8S 22 ++ serU8S k
 
 private def serOpRefS : OpRef → ByteArray
   | .abstract op => serU8S 0 ++ serAbstractOpS op
@@ -270,6 +271,7 @@ private def readAbstractOp : Parser AbstractOp := do
   | 19 => return .addImm (← readU8)
   | 20 => return .andImm (← readU8)
   | 21 => return .movImm (← readU8)
+  | 22 => return .compareImm (← readU8)
   | t  => throw s!"unknown AbstractOp tag {t}"
 
 private def readOpRef : Parser OpRef := do

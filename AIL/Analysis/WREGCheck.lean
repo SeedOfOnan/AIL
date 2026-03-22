@@ -74,7 +74,8 @@ def wregEffect : AbstractOp → WREGEffect
   | .and         => .consumes  -- ANDWF f,F: f ← WREG & f; WREG unchanged
   | .or          => .consumes  -- IORWF f,F: f ← WREG | f; WREG unchanged
   | .xor         => .consumes  -- XORWF f,F: f ← WREG ^ f; WREG unchanged
-  | .compare     => .consumes  -- CPFSEQ/SUBWF (compare): reads WREG
+  | .compare     => .consumes   -- CPFSEQ: reads WREG, skip if f == WREG
+  | .compareImm _ => .defines  -- MOVLW k; CPFSEQ f: net effect WREG = k (AIL#33)
   -- Ops that read WREG and write WREG (consume and redefine)
   | .addImm _    => .consumesAndDefines  -- ADDLW k: WREG ← WREG + k
   | .xorImm _    => .consumesAndDefines  -- XORLW k: WREG ← WREG ^ k

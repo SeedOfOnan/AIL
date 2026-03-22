@@ -181,8 +181,9 @@ def flagOutputs : AbstractOp → Array FlagKind
   | .xorImm _    => #[.Z, .N]   -- XORLW
   | .andImm _    => #[.Z, .N]   -- ANDLW
   | .movImm _    => #[]          -- MOVLW does NOT affect STATUS
-  | .compare     => #[]          -- CPFSEQ is a skip; does not set STATUS flags
-  | _            => #[]
+  | .compare      => #[]         -- CPFSEQ is a skip; does not set STATUS flags
+  | .compareImm _ => #[]         -- MOVLW+CPFSEQ is a skip; does not set STATUS flags
+  | _             => #[]
 
 /-- After emitting a flag-producing atomic proc as a condition test, append
     BTFSS STATUS, bit if the proc declares a FormalKind.flag ret.
@@ -198,7 +199,7 @@ private def emitFlagSkip (testH : Hash) : Emit Unit := do
       -- Direct-skip ops (testBit, compare) already emit a PIC18 skip instruction;
       -- do not add a redundant BTFSS.
       match op with
-      | .testBit | .compare => return
+      | .testBit | .compare | .compareImm _ => return
       | _ =>
           -- Find the first flag-kind ret and emit BTFSS STATUS, bit.
           for retH in rets do
@@ -320,6 +321,14 @@ private def emitOp (ref : OpRef) (reads writes : Array Hash) : Emit Unit := do
       | .addImm k => out (.addlw k)
       | .andImm k => out (.andlw k)
       | .movImm k => out (.movlw k)
+      | .compareImm k =>
+          -- Compare reads[0] with literal k: skip if equal.
+          -- MOVLW k     — load the constant into WREG
+          -- CPFSEQ f    — skip next instruction if f == WREG
+          -- This is the skip-when-TRUE protocol; elseB/whileDone follows as the skipped insn.
+          let f ← resolveAddr (← reads[0]? |>.elim (throw "compareImm: no operand") pure)
+          out (.movlw k)
+          out (.cpfseq f)
   | .intrinsic ih =>
       -- Inline an intrinsic proc's instruction sequence.
       -- The hash must point to a Node.proc with ProcBody.intrinsic body.
