@@ -565,38 +565,18 @@ def ex06_uart_rx : Example :=
 -- ---------------------------------------------------------------------------
 
 def ex08_ringbuf : Example :=
-  let rb := makeRingBuf 0x10 0x11 0x12 0x32 32 10 "rb"
-  -- Overrun flag
-  let n_overrun : Node := .data .data .w8 0x33 "rb_overrun"
-  let h_overrun := hashNode n_overrun
-  -- Bool formal for the if_full cond (uid 11, distinct from rb's uid 10)
-  -- (rb.h_is_full already has a bool formal in its rets; the cond node wraps it)
-  -- set_overrun: setf overrun  (just use an intrinsic since no abstract setf)
-  let n_set_overrun : Node := .proc #[] #[]
-    (.intrinsic
-      #[s!"    setf    {hashLabel h_overrun}, c"]
-      #[] #[h_overrun]
-      #["mark buffer overrun"])
-    "rb_set_overrun"
-  let h_set_overrun := hashNode n_set_overrun
-  -- nop: else branch when not full
-  let n_nop : Node := .proc #[] #[] (.seq #[]) "nop"
-  let h_nop := hashNode n_nop
-  -- if_full: cond (is_full) (set_overrun) (push)
-  let n_if_full : Node := .proc #[] #[]
-    (.cond rb.h_is_full h_set_overrun rb.h_push) "rb_if_full"
-  let h_if_full := hashNode n_if_full
-  -- entry: seq [if_full]
-  let n_entry : Node := .proc #[] #[] (.seq #[h_if_full]) "rb_entry"
-  let h_entry := hashNode n_entry
-  -- Merge rb.nodes with the extra nodes
-  let s := rb.nodes.foldl (fun acc (h, n) => Store.insert acc h n) Store.empty
-  let s := Store.insert s h_overrun    n_overrun
-  let s := Store.insert s h_set_overrun n_set_overrun
-  let s := Store.insert s h_nop        n_nop
-  let s := Store.insert s h_if_full    n_if_full
-  let s := Store.insert s h_entry      n_entry
-  { name := "Ex08: makeRingBuf  (32-byte ring buffer library)", store := s,
+  let build : StoreM Hash := do
+    let rb ← makeRingBuf 0x10 0x11 0x12 0x32 32 10 "rb"
+    let h_overrun     ← StoreM.node (.data .data .w8 0x33 "rb_overrun")
+    let h_set_overrun ← StoreM.node (.proc #[] #[]
+      (.intrinsic #[s!"    setf    {hashLabel h_overrun}, c"] #[] #[h_overrun]
+                  #["mark buffer overrun"]) "rb_set_overrun")
+    let _h_nop        ← StoreM.node (.proc #[] #[] (.seq #[]) "nop")
+    let h_if_full     ← StoreM.node (.proc #[] #[]
+      (.cond rb.h_is_full h_set_overrun rb.h_push) "rb_if_full")
+    StoreM.node (.proc #[] #[] (.seq #[h_if_full]) "rb_entry")
+  let (h_entry, store) := StoreM.run build
+  { name := "Ex08: makeRingBuf  (32-byte ring buffer library)", store,
     ivt  := #[(0, h_entry)] }
 
 -- ---------------------------------------------------------------------------
@@ -633,217 +613,137 @@ def ex08_ringbuf : Example :=
 -- ---------------------------------------------------------------------------
 
 def ex09_main_loop : Example :=
-  -- -------------------------------------------------------------------------
-  -- Ring buffer (shared between ISR push and main pop)
-  -- -------------------------------------------------------------------------
-  let rb := makeRingBuf 0x20 0x21 0x23 0x22 32 100 "rx"
+  let build : StoreM Hash := do
+    -- -------------------------------------------------------------------------
+    -- Ring buffer (shared between ISR push and main pop)
+    -- -------------------------------------------------------------------------
+    let rb ← makeRingBuf 0x20 0x21 0x23 0x22 32 100 "rx"
+  
+    -- -------------------------------------------------------------------------
+    -- STATUS register and Z flag (needed for xorlw-based newline test)
+    -- -------------------------------------------------------------------------
+    let h_STATUS ← StoreM.node (.peripheral .sfr 0xFD8
+      { readable := true, writable := true,
+        sideEffectOnRead := false, sideEffectOnWrite := false, accessWidth := .w8 }
+      "STATUS")
+    -- Z flag: STATUS bit 2 (PIC18 STATUS register, DS40002329F §3.2.1)
+    let h_Z ← StoreM.node (.bitField h_STATUS 2 "Z")
+  
+    -- -------------------------------------------------------------------------
+    -- Application state nodes
+    -- -------------------------------------------------------------------------
+    let h_getch_result ← StoreM.node (.data .data .w8 0x44 "getch_result")
+    let h_line_len     ← StoreM.node (.data .data .w8 0x45 "line_len")
+    let h_line_buf     ← StoreM.node (.staticArray .data .w8 0x46 64 "line_buf")
+  
+    -- -------------------------------------------------------------------------
+    -- Bool formals
+    -- -------------------------------------------------------------------------
+    -- uid 101: for is_empty rets
+    -- uid 102: for test_is_newline rets (Z flag)
+    let h_bool_empty ← StoreM.node (.formal 101 .bool)
+    let h_bool_nl    ← StoreM.node (.formal 102 .bool)
+  
+    -- -------------------------------------------------------------------------
+    -- is_empty: head == tail (buffer is empty)
+    -- cpfseq: skip if f == WREG.  Load tail into WREG; cpfseq head skips when
+    -- head == tail (empty).  In the cond skip-protocol: skip = condition TRUE =
+    -- buffer IS empty (keep spinning in getch_spin).
+    -- -------------------------------------------------------------------------
+    let h_is_empty ← StoreM.node (.proc #[] #[h_bool_empty]
+      (.intrinsic
+        #[s!"    movf    {hashLabel rb.h_tail}, w, c",
+          s!"    cpfseq  {hashLabel rb.h_head}, c"]
+        #[rb.h_head, rb.h_tail] #[]
+        #["condition: head == tail (buffer empty)"])
+      "rx_is_empty")
+  
+    -- -------------------------------------------------------------------------
+    -- getch_spin: spin until non-empty — whileLoop(is_empty, nop).
+    -- -------------------------------------------------------------------------
+    let h_getch_nop  ← StoreM.node (.proc #[] #[] (.seq #[]) "getch_nop")
+    let h_getch_spin ← StoreM.node (.proc #[] #[]
+      (.whileLoop h_is_empty h_getch_nop) "getch_spin")
+  
+    -- -------------------------------------------------------------------------
+    -- pop: read buf[head] → getch_result, advance head mod 32.
+    --
+    -- DESIGN GAP A: uses FSR0 — same FSR as ISR push (makeRingBuf).
+    -- No critical section: if the high-priority ISR fires between the LFSR
+    -- and the MOVF INDF0, FSR0 is clobbered and getch_result gets the wrong byte.
+    -- Fix requires BCF INTCON,GIE (AIL#14) and/or FSR annotation (AIL#13).
+    -- -------------------------------------------------------------------------
+    let h_pop ← StoreM.node (.proc #[] #[h_getch_result]
+      (.intrinsic
+        #[s!"    lfsr    0, {hashLabel rb.h_data}",
+          s!"    movf    {hashLabel rb.h_head}, w, c",
+          "    addwf   FSR0L, f, c",
+          "    movf    INDF0, w, c",
+          s!"    movwf   {hashLabel h_getch_result}, c",
+          s!"    incf    {hashLabel rb.h_head}, f, c",
+          "    movlw   31",
+          s!"    andwf   {hashLabel rb.h_head}, f, c"]
+        #[rb.h_data, rb.h_head] #[rb.h_head, h_getch_result]
+        #["pop buf[head] → getch_result; advance head mod 32",
+          "DESIGN GAP A: uses FSR0 — conflicts with ISR push (AIL#13, AIL#14)"])
+      "rx_pop")
+    let h_getch ← StoreM.node (.proc #[] #[h_getch_result]
+      (.seq #[h_getch_spin, h_pop]) "getch")
+  
+    -- -------------------------------------------------------------------------
+    -- test_is_newline: getch_result == '\n' (0x0A)?
+    --
+    -- Three-step seq:
+    --   1. load getch_result → WREG              (AbstractOp.load)
+    --   2. xorlw 0x0A                            (intrinsic — DESIGN GAP C, AIL#12)
+    --   3. btfss STATUS, Z                       (AbstractOp.testBit on n_Z)
+    --
+    -- After xorlw: if WREG was 0x0A, WREG = 0 and Z = 1.
+    -- btfss STATUS,2 skips when Z=1 (condition TRUE = is newline).
+    -- In the cond protocol: skip = condition TRUE = byte is '\n'.
+    -- -------------------------------------------------------------------------
+    let h_load_gc ← StoreM.node (.proc #[h_getch_result] #[]
+      (.atomic (.abstract .load) #[h_getch_result] #[]) "load_getch_result")
+    let h_xor_nl  ← StoreM.node (.proc #[] #[]
+      (.atomic (.abstract (.xorImm 0x0a)) #[] #[]) "xor_newline")
+    let h_test_z  ← StoreM.node (.proc #[] #[h_bool_nl]
+      (.atomic (.abstract .testBit) #[h_Z] #[]) "test_Z_flag")
+    let h_test_nl ← StoreM.node (.proc #[] #[h_bool_nl]
+      (.seq #[h_load_gc, h_xor_nl, h_test_z]) "test_is_newline")
+  
+    -- -------------------------------------------------------------------------
+    -- append_line: write getch_result to line_buf[line_len]; line_len++.
+    -- Uses FSR1 (not FSR0) — demonstrates multi-FSR usage.
+    -- FSR annotations (AIL#13) would declare FSR0 → getch/pop, FSR1 → append_line,
+    -- making the non-conflict between these two explicit and checkable.
+    -- -------------------------------------------------------------------------
+    let h_append_line ← StoreM.node (.proc #[] #[]
+      (.intrinsic
+        #[s!"    lfsr    1, {hashLabel h_line_buf}",
+          s!"    movf    {hashLabel h_line_len}, w, c",
+          "    addwf   FSR1L, f, c",
+          s!"    movf    {hashLabel h_getch_result}, w, c",
+          "    movwf   INDF1, c",
+          s!"    incf    {hashLabel h_line_len}, f, c"]
+        #[h_line_buf, h_line_len, h_getch_result] #[h_line_len]
+        #["line_buf[line_len] = getch_result; line_len++",
+          "uses FSR1 (distinct from FSR0 used by pop/getch for ring buffer)"])
+      "append_line")
+  
+    let h_process_line ← StoreM.node (.proc #[] #[]
+      (.intrinsic #[s!"    clrf    {hashLabel h_line_len}, c"] #[] #[h_line_len]
+                  #["stub: clear line buffer; TODO: implement line processing"])
+      "process_line")
+  
+    let h_if_nl     ← StoreM.node (.proc #[] #[]
+      (.cond h_test_nl h_process_line h_append_line) "if_newline")
+    let h_main_body ← StoreM.node (.proc #[] #[]
+      (.seq #[h_getch, h_if_nl]) "main_body")
+    StoreM.node (.proc #[] #[] (.forever h_main_body) "main")
 
-  -- -------------------------------------------------------------------------
-  -- STATUS register and Z flag (needed for xorlw-based newline test)
-  -- -------------------------------------------------------------------------
-  let sem_status : AccessSemantics :=
-    { readable := true, writable := true,
-      sideEffectOnRead := false, sideEffectOnWrite := false, accessWidth := .w8 }
-  let n_STATUS : Node := .peripheral .sfr 0xFD8 sem_status "STATUS"
-  let h_STATUS := hashNode n_STATUS
-  -- Z flag: STATUS bit 2 (PIC18 STATUS register, DS40002329F §3.2.1)
-  let n_Z : Node := .bitField h_STATUS 2 "Z"
-  let h_Z := hashNode n_Z
-
-  -- -------------------------------------------------------------------------
-  -- Application state nodes
-  -- -------------------------------------------------------------------------
-  let n_getch_result : Node := .data .data .w8 0x44 "getch_result"
-  let h_getch_result := hashNode n_getch_result
-  let n_line_len     : Node := .data .data .w8 0x45 "line_len"
-  let h_line_len     := hashNode n_line_len
-  let n_line_buf     : Node := .staticArray .data .w8 0x46 64 "line_buf"
-  let h_line_buf     := hashNode n_line_buf
-
-  -- -------------------------------------------------------------------------
-  -- Bool formals
-  -- -------------------------------------------------------------------------
-  -- uid 101: for is_empty rets
-  -- uid 102: for test_is_newline rets (Z flag)
-  let n_bool_empty : Node := .formal 101 .bool
-  let h_bool_empty := hashNode n_bool_empty
-  let n_bool_nl    : Node := .formal 102 .bool
-  let h_bool_nl    := hashNode n_bool_nl
-
-  -- -------------------------------------------------------------------------
-  -- is_empty: head == tail (buffer is empty)
-  -- cpfseq: skip if f == WREG.  Load tail into WREG; cpfseq head skips when
-  -- head == tail (empty).  In the cond skip-protocol: skip = condition TRUE =
-  -- buffer IS empty (keep spinning in getch_spin).
-  -- -------------------------------------------------------------------------
-  let n_is_empty : Node := .proc #[] #[h_bool_empty]
-    (.intrinsic
-      #[s!"    movf    {hashLabel rb.h_tail}, w, c",
-        s!"    cpfseq  {hashLabel rb.h_head}, c"]
-      #[rb.h_head, rb.h_tail] #[]
-      #["condition: head == tail (buffer empty)"])
-    "rx_is_empty"
-  let h_is_empty := hashNode n_is_empty
-
-  -- -------------------------------------------------------------------------
-  -- getch_spin: spin until non-empty — whileLoop(is_empty, nop).
-  --
-  -- is_empty (h_is_empty) ends with CPFSEQ — skips when head==tail (TRUE=empty).
-  -- whileLoop loops while is_empty is TRUE (i.e. while the buffer is empty).
-  -- Body is a nop (empty seq) — just spin waiting.
-  -- Exits when is_empty is FALSE (head != tail, byte available).
-  -- -------------------------------------------------------------------------
-  let n_getch_nop : Node := .proc #[] #[] (.seq #[]) "getch_nop"
-  let h_getch_nop := hashNode n_getch_nop
-  let n_getch_spin : Node := .proc #[] #[]
-    (.whileLoop h_is_empty h_getch_nop) "getch_spin"
-  let h_getch_spin := hashNode n_getch_spin
-
-  -- -------------------------------------------------------------------------
-  -- pop: read buf[head] → getch_result, advance head mod 32.
-  --
-  -- DESIGN GAP A: uses FSR0 — same FSR as ISR push (makeRingBuf).
-  -- No critical section: if the high-priority ISR fires between the LFSR
-  -- and the MOVF INDF0, FSR0 is clobbered and getch_result gets the wrong byte.
-  -- Fix requires BCF INTCON,GIE (AIL#14) and/or FSR annotation (AIL#13).
-  -- -------------------------------------------------------------------------
-  let n_pop : Node := .proc #[] #[h_getch_result]
-    (.intrinsic
-      #[s!"    lfsr    0, {hashLabel rb.h_data}",
-        s!"    movf    {hashLabel rb.h_head}, w, c",
-        "    addwf   FSR0L, f, c",
-        "    movf    INDF0, w, c",
-        s!"    movwf   {hashLabel h_getch_result}, c",
-        s!"    incf    {hashLabel rb.h_head}, f, c",
-        "    movlw   31",
-        s!"    andwf   {hashLabel rb.h_head}, f, c"]
-      #[rb.h_data, rb.h_head] #[rb.h_head, h_getch_result]
-      #["pop buf[head] → getch_result; advance head mod 32",
-        "DESIGN GAP A: uses FSR0 — conflicts with ISR push (AIL#13, AIL#14)"])
-    "rx_pop"
-  let h_pop := hashNode n_pop
-
-  -- -------------------------------------------------------------------------
-  -- getch: spin until non-empty, then pop.  seq [getch_spin, pop].
-  -- Separates the spin concern from the pop concern at the typed-node level,
-  -- even though both are currently intrinsics.
-  -- -------------------------------------------------------------------------
-  let n_getch : Node := .proc #[] #[h_getch_result]
-    (.seq #[h_getch_spin, h_pop]) "getch"
-  let h_getch := hashNode n_getch
-
-  -- -------------------------------------------------------------------------
-  -- test_is_newline: getch_result == '\n' (0x0A)?
-  --
-  -- Three-step seq:
-  --   1. load getch_result → WREG              (AbstractOp.load)
-  --   2. xorlw 0x0A                            (intrinsic — DESIGN GAP C, AIL#12)
-  --   3. btfss STATUS, Z                       (AbstractOp.testBit on n_Z)
-  --
-  -- After xorlw: if WREG was 0x0A, WREG = 0 and Z = 1.
-  -- btfss STATUS,2 skips when Z=1 (condition TRUE = is newline).
-  -- In the cond protocol: skip = condition TRUE = byte is '\n'.
-  -- -------------------------------------------------------------------------
-  let n_load_gc : Node := .proc #[h_getch_result] #[]
-    (.atomic (.abstract .load) #[h_getch_result] #[]) "load_getch_result"
-  let h_load_gc := hashNode n_load_gc
-
-  -- xorlw 0x0A: WREG ^= '\n'.  Now a typed atomic op (AbstractOp.xorImm),
-  -- resolving the intrinsic workaround noted as DESIGN GAP C (AIL#15 closed).
-  let n_xor_nl : Node := .proc #[] #[]
-    (.atomic (.abstract (.xorImm 0x0a)) #[] #[]) "xor_newline"
-  let h_xor_nl := hashNode n_xor_nl
-
-  let n_test_z : Node := .proc #[] #[h_bool_nl]
-    (.atomic (.abstract .testBit) #[h_Z] #[]) "test_Z_flag"
-  let h_test_z := hashNode n_test_z
-
-  let n_test_nl : Node := .proc #[] #[h_bool_nl]
-    (.seq #[h_load_gc, h_xor_nl, h_test_z]) "test_is_newline"
-  let h_test_nl := hashNode n_test_nl
-
-  -- -------------------------------------------------------------------------
-  -- append_line: write getch_result to line_buf[line_len]; line_len++.
-  -- Uses FSR1 (not FSR0) — demonstrates multi-FSR usage.
-  -- FSR annotations (AIL#13) would declare FSR0 → getch/pop, FSR1 → append_line,
-  -- making the non-conflict between these two explicit and checkable.
-  -- -------------------------------------------------------------------------
-  let n_append_line : Node := .proc #[] #[]
-    (.intrinsic
-      #[s!"    lfsr    1, {hashLabel h_line_buf}",
-        s!"    movf    {hashLabel h_line_len}, w, c",
-        "    addwf   FSR1L, f, c",
-        s!"    movf    {hashLabel h_getch_result}, w, c",
-        "    movwf   INDF1, c",
-        s!"    incf    {hashLabel h_line_len}, f, c"]
-      #[h_line_buf, h_line_len, h_getch_result] #[h_line_len]
-      #["line_buf[line_len] = getch_result; line_len++",
-        "uses FSR1 (distinct from FSR0 used by pop/getch for ring buffer)"])
-    "append_line"
-  let h_append_line := hashNode n_append_line
-
-  -- -------------------------------------------------------------------------
-  -- process_line: consume the accumulated line (stub).
-  -- TODO: implement command dispatch, echo, etc.
-  -- -------------------------------------------------------------------------
-  let n_process_line : Node := .proc #[] #[]
-    (.intrinsic
-      #[s!"    clrf    {hashLabel h_line_len}, c"]
-      #[] #[h_line_len]
-      #["stub: clear line buffer; TODO: implement line processing"])
-    "process_line"
-  let h_process_line := hashNode n_process_line
-
-  -- -------------------------------------------------------------------------
-  -- if_newline: if getch_result == '\n' → process_line else → append_line
-  -- -------------------------------------------------------------------------
-  let n_if_nl : Node := .proc #[] #[]
-    (.cond h_test_nl h_process_line h_append_line) "if_newline"
-  let h_if_nl := hashNode n_if_nl
-
-  -- -------------------------------------------------------------------------
-  -- main_body: one iteration of the main loop — fetch one byte, dispatch.
-  -- -------------------------------------------------------------------------
-  let n_main_body : Node := .proc #[] #[]
-    (.seq #[h_getch, h_if_nl]) "main_body"
-  let h_main_body := hashNode n_main_body
-
-  -- -------------------------------------------------------------------------
-  -- main: the reset entry point — run main_body forever.
-  -- ProcBody.forever replaces the "infinite bra $ loop" idiom with a typed node.
-  -- -------------------------------------------------------------------------
-  let n_main : Node := .proc #[] #[]
-    (.forever h_main_body) "main"
-  let h_main := hashNode n_main
-
-  -- -------------------------------------------------------------------------
-  -- Store
-  -- -------------------------------------------------------------------------
-  let s := rb.nodes.foldl (fun acc (h, n) => Store.insert acc h n) Store.empty
-  let s := Store.insert s h_STATUS       n_STATUS
-  let s := Store.insert s h_Z            n_Z
-  let s := Store.insert s h_getch_result n_getch_result
-  let s := Store.insert s h_line_len     n_line_len
-  let s := Store.insert s h_line_buf     n_line_buf
-  let s := Store.insert s h_bool_empty   n_bool_empty
-  let s := Store.insert s h_bool_nl      n_bool_nl
-  let s := Store.insert s h_is_empty     n_is_empty
-  let s := Store.insert s h_getch_nop    n_getch_nop
-  let s := Store.insert s h_getch_spin   n_getch_spin
-  let s := Store.insert s h_pop          n_pop
-  let s := Store.insert s h_getch        n_getch
-  let s := Store.insert s h_load_gc      n_load_gc
-  let s := Store.insert s h_xor_nl       n_xor_nl
-  let s := Store.insert s h_test_z       n_test_z
-  let s := Store.insert s h_test_nl      n_test_nl
-  let s := Store.insert s h_append_line  n_append_line
-  let s := Store.insert s h_process_line n_process_line
-  let s := Store.insert s h_if_nl        n_if_nl
-  let s := Store.insert s h_main_body    n_main_body
-  let s := Store.insert s h_main         n_main
+  let (h_main, store) := StoreM.run build
   { name := "Ex09: Main loop  (getch ring-buf → line buffer until '\\n')",
-    store := s,
-    ivt   := #[(0, h_main)] }
+    store, ivt := #[(0, h_main)] }
 
 -- ---------------------------------------------------------------------------
 -- Ex10: Critical section  (BCF INTCON.GIE / BSF INTCON.GIE)
@@ -859,34 +759,46 @@ def ex09_main_loop : Example :=
 -- ---------------------------------------------------------------------------
 
 def ex10_critical : Example :=
-  let ic := makeINTCON 0xFF2
-  let n_src  : Node := .data .data .w8 0x20 "src"
-  let h_src  := hashNode n_src
-  let n_dst  : Node := .data .data .w8 0x21 "dst"
-  let h_dst  := hashNode n_dst
-  let n_load : Node := .proc #[h_src] #[] (.atomic (.abstract .load)  #[h_src] #[]) "load_src"
-  let h_load := hashNode n_load
-  let n_stor : Node := .proc #[] #[h_dst] (.atomic (.abstract .store) #[] #[h_dst]) "store_dst"
-  let h_stor := hashNode n_stor
-  -- body: copy src → dst
-  let n_body : Node := .proc #[] #[] (.seq #[h_load, h_stor]) "copy_body"
-  let h_body := hashNode n_body
-  -- critical section: disable_ints; copy; enable_ints
-  let n_crit : Node := .proc #[] #[]
-    (.seq #[ic.h_disable_ints, h_body, ic.h_enable_ints]) "critical_copy"
-  let h_crit := hashNode n_crit
-  let n_reset : Node := .proc #[] #[] (.seq #[h_crit]) "reset"
-  let h_reset := hashNode n_reset
-  let s := ic.nodes.foldl (fun acc (h, n) => Store.insert acc h n) Store.empty
-  let s := Store.insert s h_src   n_src
-  let s := Store.insert s h_dst   n_dst
-  let s := Store.insert s h_load  n_load
-  let s := Store.insert s h_stor  n_stor
-  let s := Store.insert s h_body  n_body
-  let s := Store.insert s h_crit  n_crit
-  let s := Store.insert s h_reset n_reset
+  let build : StoreM Hash := do
+    let ic    ← makeINTCON 0xFF2
+    let h_src  ← StoreM.node (.data .data .w8 0x20 "src")
+    let h_dst  ← StoreM.node (.data .data .w8 0x21 "dst")
+    let h_load ← StoreM.node (.proc #[h_src] #[] (.atomic (.abstract .load)  #[h_src] #[]) "load_src")
+    let h_stor ← StoreM.node (.proc #[] #[h_dst] (.atomic (.abstract .store) #[] #[h_dst]) "store_dst")
+    let h_body ← StoreM.node (.proc #[] #[] (.seq #[h_load, h_stor]) "copy_body")
+    let h_crit ← StoreM.node (.proc #[] #[]
+      (.seq #[ic.h_disable_ints, h_body, ic.h_enable_ints]) "critical_copy")
+    StoreM.node (.proc #[] #[] (.seq #[h_crit]) "reset")
+  let (h_reset, store) := StoreM.run build
   { name := "Ex10: Critical section  (BCF/BSF INTCON.GIE around copy)",
-    store := s, ivt := #[(0, h_reset)] }
+    store, ivt := #[(0, h_reset)] }
+
+-- ---------------------------------------------------------------------------
+-- Ex11: StaticAlloc — compiler-assigned RAM addresses (AIL#19)
+--
+-- Declares 4 statics (head, tail, data[8], temp) for a ring buffer.
+-- Allocates from 0x20; verifies assigned addresses and checks that
+-- an over-budget allocation produces RamBudgetExceeded.
+-- ---------------------------------------------------------------------------
+
+def runStaticAllocTest : IO Unit := do
+  IO.println "=== Ex11: StaticAlloc  (compiler-assigned RAM addresses) ==="
+  let decls : Array StaticDecl := #[
+    { name := "head", width := .w8, count := 1 },
+    { name := "tail", width := .w8, count := 1 },
+    { name := "data", width := .w8, count := 8 },
+    { name := "temp", width := .w8, count := 1 },
+  ]
+  -- Successful allocation: 11 bytes from 0x20, budget 0x10 (16 bytes)
+  match allocateStatics decls 0x20 0x10 with
+  | .error e => IO.println s!"  FAIL (unexpected error): {e}"
+  | .ok (m, next) =>
+      IO.println s!"  allocateStatics: PASS  (next free addr = {next})"
+      for line in m.renderMapFile do IO.println s!"  {line}"
+  -- Budget exceeded: same 11 bytes but budget = 0x08 (8 bytes)
+  match allocateStatics decls 0x20 0x08 with
+  | .error e => IO.println s!"  RamBudgetExceeded: PASS  ({e})"
+  | .ok _    => IO.println   "  RamBudgetExceeded: FAIL (expected error but got ok)"
 
 -- ---------------------------------------------------------------------------
 -- Entry point
@@ -899,3 +811,5 @@ def main : IO Unit := do
   for ex in examples do
     runExample ex
     IO.println ""
+  runStaticAllocTest
+  IO.println ""

@@ -7,6 +7,7 @@ import AIL.Core.Hash
 import AIL.Core.AST
 import AIL.Core.Store
 import AIL.Core.Types
+import AIL.Core.StaticAlloc
 
 -- Standard library
 import AIL.Lib.PIC18.RingBuf
