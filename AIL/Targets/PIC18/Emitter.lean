@@ -530,6 +530,22 @@ def PIC18Vector.name : PIC18Vector → String
   | .loISR  => "loISR"
   | .vic n  => s!"vic{n}"
 
+/-- Hardware byte address for classic PIC18 interrupt vectors (AIL#23).
+    reset → 0x0000, hiISR → 0x0008, loISR → 0x0018.
+    vic n has no fixed classic-PIC18 address (Q71 VIC hardware only). -/
+def PIC18Vector.hwAddr? : PIC18Vector → Option UInt32
+  | .reset  => some 0x0000
+  | .hiISR  => some 0x0008
+  | .loISR  => some 0x0018
+  | .vic _  => none
+
+/-- Format a 16-bit address as 4-digit XC8 hex literal (e.g. 0x0008 → "0008h"). -/
+private def fmtHex4 (n : UInt32) : String :=
+  let d : Nat → String := fun k =>
+    let nibble := (n.toNat >>> k) &&& 0xF
+    if nibble < 10 then toString nibble else String.singleton (Char.ofNat (nibble - 10 + 'a'.toNat))
+  s!"{d 12}{d 8}{d 4}{d 0}h"
+
 /-- Interrupt vector table entry: (symbolic vector, proc_hash).
     The proc must satisfy Ty.proc [] [] d with d ≤ cfg.maxCallDepth. -/
 abbrev IVTEntry := PIC18Vector × Hash
@@ -569,10 +585,12 @@ def compile (store : Store) (tyEnv : TyEnv) (ivt : Array IVTEntry)
       let vecNum := vec.toVecNum
       if ← wasVisited h then
         -- Proc already emitted (shared across two vectors); emit a redirect.
+        out (.global s!"_ail_vec{vecNum}")
         out (.lbl s!"_ail_vec{vecNum}")
         out (.goto_ (hashLabel h))
       else
         markVisited h
+        out (.global s!"_ail_vec{vecNum}")
         out (.lbl s!"_ail_vec{vecNum}")
         out (.lbl (hashLabel h))
         emitNamedLabels h  -- emit named aliases if any (AIL#25)
@@ -596,7 +614,7 @@ def compile (store : Store) (tyEnv : TyEnv) (ivt : Array IVTEntry)
       #["; --- Data / peripheral node declarations ---"] ++
       final.dataDecls ++
       #[""]
-  -- IVT summary as comments (hardware IVT section is a TODO).
+  -- IVT summary as comments.
   let ivtComments : Array String :=
     #["; --- IVT ---"] ++
     ivt.map (fun (vec, h) =>
@@ -606,6 +624,24 @@ def compile (store : Store) (tyEnv : TyEnv) (ivt : Array IVTEntry)
     #[""]
   -- Code section: typed instructions rendered to assembly text.
   let codeLines := final.insns.map renderInsn
-  return dataSection ++ ivtComments ++ codeLines
+  -- Hardware IVT stubs (AIL#23): absolute PSECTs at classic PIC18 vector addresses.
+  -- Each stub jumps to the actual handler in ailCode.
+  -- Emitted as separate PSECTs so the linker can place them at exact addresses.
+  -- The reset vector (0x0000) stub is included; real builds need it even if C wrappers
+  -- call _ail_vec0 directly for test purposes.
+  let ivtStubs : Array String :=
+    ivt.foldl (fun acc (vec, h) =>
+      match vec.hwAddr? with
+      | none => acc   -- Q71 VIC: no fixed classic-PIC18 address
+      | some addr =>
+          let psectName := s!"ail_{vec.name}"
+          acc ++ #[
+            s!"    PSECT   {psectName},class=CODE,reloc=2,abs,ovrld",
+            s!"    ORG     {fmtHex4 addr}",
+            s!"    goto    {hashLabel h}",
+            ""
+          ]) #[]
+  return dataSection ++ ivtComments ++ codeLines ++
+    (if ivtStubs.isEmpty then #[] else #["", "; --- Hardware IVT stubs ---"] ++ ivtStubs)
 
 end AIL.PIC18

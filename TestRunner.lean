@@ -1370,6 +1370,61 @@ def runNameTableTest : IO Unit := do
           IO.println s!"  IVT comment includes name                 : {if ivtHasName then pass else fail}"
 
 -- ---------------------------------------------------------------------------
+-- Ex21: IVT section emission  (AIL#23)
+--
+-- Checks:
+--   A. global directive emitted for each IVT entry's vec label.
+--   B. Single-vec (reset): PSECT ail_reset + ORG 0000h + goto in output.
+--   C. Two-vec (reset + hiISR): both PSECTs and ORGs present.
+--   D. vic n (Q71): no PSECT stub emitted (no fixed classic-PIC18 address).
+-- ---------------------------------------------------------------------------
+
+def runIVTSectionTest : IO Unit := do
+  IO.println "=== Ex21: IVT section emission  (AIL#23) ==="
+  let pass := "PASS"; let fail := "FAIL"
+  let (h_reset, s21a) := StoreM.run <| do
+    StoreM.node (.proc #[] #[] (.seq #[]) "reset_proc")
+  match checkStore targetConfig s21a with
+  | .error d => IO.println s!"  checkStore FAIL: {d.message}"
+  | .ok tyEnv =>
+      -- Part A: single reset vector
+      match compile s21a tyEnv #[(.reset, h_reset)] with
+      | .error msg => IO.println s!"  compile FAIL: {msg}"
+      | .ok lines =>
+          let hasGlobal := lines.any fun l => !(l.splitOn "global  _ail_vec0").tail.isEmpty
+          let hasPsect  := lines.any fun l => !(l.toLower.splitOn "psect   ail_reset").tail.isEmpty
+          let hasOrg    := lines.any fun l => !(l.toLower.splitOn "org     0000h").tail.isEmpty
+          let hasGoto   := lines.any fun l => !(l.toLower.splitOn "goto").tail.isEmpty
+          IO.println s!"  reset: global _ail_vec0 emitted           : {if hasGlobal then pass else fail}"
+          IO.println s!"  reset: PSECT ail_reset emitted            : {if hasPsect  then pass else fail}"
+          IO.println s!"  reset: ORG 0000h emitted                  : {if hasOrg    then pass else fail}"
+          IO.println s!"  reset: goto in stub                       : {if hasGoto   then pass else fail}"
+  -- Part B: reset + hiISR
+  let (h_isr, s21b) := StoreM.run <| do
+    StoreM.node (.proc #[] #[] (.seq #[]) "isr_proc")
+  match checkStore targetConfig s21b with
+  | .error _ => IO.println s!"  checkStore FAIL (hiISR store)"
+  | .ok tyEnv2 =>
+      match compile s21b tyEnv2 #[(.reset, h_isr), (.hiISR, h_isr)] with
+      | .error msg => IO.println s!"  compile FAIL (hiISR): {msg}"
+      | .ok lines =>
+          let hasHiPsect := lines.any fun l => !(l.toLower.splitOn "psect   ail_hiISR".toLower).tail.isEmpty
+          let hasHiOrg   := lines.any fun l => !(l.toLower.splitOn "org     0008h").tail.isEmpty
+          IO.println s!"  hiISR: PSECT ail_hiISR emitted            : {if hasHiPsect then pass else fail}"
+          IO.println s!"  hiISR: ORG 0008h emitted                  : {if hasHiOrg   then pass else fail}"
+  -- Part C: vic n — no PSECT stub
+  let (h_vic, s21c) := StoreM.run <| do
+    StoreM.node (.proc #[] #[] (.seq #[]) "vic_proc")
+  match checkStore targetConfig s21c with
+  | .error _ => IO.println s!"  checkStore FAIL (vic store)"
+  | .ok tyEnv3 =>
+      match compile s21c tyEnv3 #[(.vic 5, h_vic)] with
+      | .error msg => IO.println s!"  compile FAIL (vic): {msg}"
+      | .ok lines =>
+          let noPsect := !(lines.any fun l => !(l.toLower.splitOn "psect").tail.isEmpty)
+          IO.println s!"  vic n: no PSECT stub emitted              : {if noPsect then pass else fail}"
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
@@ -1399,4 +1454,6 @@ def main : IO Unit := do
   runCompareImmTest
   IO.println ""
   runNameTableTest
+  IO.println ""
+  runIVTSectionTest
   IO.println ""

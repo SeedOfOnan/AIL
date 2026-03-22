@@ -79,7 +79,7 @@ private def runEmit : IO Unit := do
   | .ok tyEnv =>
   -- Report inferred types to stderr.
   IO.eprintln ";--- inferred types ---"
-  for (h, _) in store do
+  for (h, _) in store.toArray do
     match tyEnv h with
     | some t => IO.eprintln s!"; {h} : {repr t}"
     | none   => IO.eprintln s!"; {h} : <no type>"
