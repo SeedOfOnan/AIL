@@ -985,6 +985,52 @@ def runCapabilityTest : IO Unit := do
   IO.println s!"  limitations non-empty            : {if chk6 then pass else fail}"
 
 -- ---------------------------------------------------------------------------
+-- Ex15: Store serialization round-trip  (AIL#10)
+--
+-- Serializes Ex01's store (5 nodes) and a NameTable with one root to
+-- ByteArray, then deserializes and verifies:
+--   1. Deserialization succeeds (no error)
+--   2. Round-tripped store has the same number of nodes
+--   3. Every hash from the original store is present in the deserialized store
+--   4. NameTable round-trips: root name and hash are preserved
+--   5. Corrupt magic bytes produce an error
+-- ---------------------------------------------------------------------------
+
+def runSerializeTest : IO Unit := do
+  IO.println "=== Ex15: Store serialization round-trip  (AIL#10) ==="
+  let pass := "PASS"; let fail := "FAIL"
+  -- Build a small store (same nodes as Ex01)
+  let (h_reset, orig) := StoreM.run <| do
+    let h_src  ← StoreM.node (.data .data .w8 0x20 "src")
+    let h_dst  ← StoreM.node (.data .data .w8 0x21 "dst")
+    let h_load ← StoreM.node (.proc #[h_src] #[] (.atomic (.abstract .load) #[h_src] #[]) "load_src")
+    let h_stor ← StoreM.node (.proc #[] #[h_dst] (.atomic (.abstract .store) #[] #[h_dst]) "store_dst")
+    let h_rst  ← StoreM.node (.proc #[] #[] (.seq #[h_load, h_stor]) "reset")
+    pure h_rst
+  -- Build a NameTable with one root
+  let nt := NameTable.insert NameTable.empty "reset" h_reset
+  -- Serialize
+  let bytes := Store.toByteArray orig nt
+  IO.println s!"  serialized size: {bytes.size} bytes"
+  -- Deserialize
+  match Store.ofByteArray bytes with
+  | .error msg =>
+      IO.println s!"  round-trip: {fail}  ({msg})"
+  | .ok (rt, rt_nt) =>
+      let sizeOk  : Bool := rt.size == orig.size
+      let hashesOk : Bool := orig.hashes.all (Store.contains rt)
+      let ntOk    : Bool := rt_nt.lookup "reset" == some h_reset
+      IO.println s!"  round-trip: {pass}"
+      IO.println s!"  node count ({orig.size}={rt.size}): {if sizeOk then pass else fail}"
+      IO.println s!"  all hashes present             : {if hashesOk then pass else fail}"
+      IO.println s!"  NameTable round-trip           : {if ntOk then pass else fail}"
+  -- Corrupt magic → should fail
+  let badBytes := (ByteArray.mk #[0xDE, 0xAD, 0xBE, 0xEF]) ++ bytes.extract 4 bytes.size
+  match Store.ofByteArray badBytes with
+  | .error _  => IO.println s!"  corrupt magic rejected         : {pass}"
+  | .ok _     => IO.println s!"  corrupt magic rejected         : {fail}"
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
@@ -1002,4 +1048,6 @@ def main : IO Unit := do
   runDiagnosticsTest
   IO.println ""
   runCapabilityTest
+  IO.println ""
+  runSerializeTest
   IO.println ""

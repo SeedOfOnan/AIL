@@ -10,6 +10,7 @@ import AIL.Core.Diagnostic
 import AIL.Core.Types
 import AIL.Core.StaticAlloc
 import AIL.Core.Capability
+import AIL.Core.Serialize
 
 -- Analysis passes
 import AIL.Analysis.FSRCheck
