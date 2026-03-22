@@ -38,6 +38,7 @@ AIL is a programming language being designed and built with the following unusua
 - Keep compilation units small and dependency graphs explicit
 - Write Lean 4 proofs or `sorry`-marked proof obligations where correctness matters
 - Update `docs/REQUIREMENTS.md` when new requirements are discovered
+- Update `docs/TODO.md` when deferred items are resolved
 
 **DO NOT:**
 - Design for human developer ergonomics — that is explicitly not the goal
@@ -50,18 +51,45 @@ AIL is a programming language being designed and built with the following unusua
 
 ## Current state
 
-Bootstrap stage. Stubs only. No real compiler exists yet.
+Active development. The PIC18 backend is functional and growing.
 
-### Immediate next tasks
-1. Derive the minimal AIL primitive set from `docs/REQUIREMENTS.md` R1 + R2
-2. Design the Core AST in `AIL/Core/AST.lean` — replace the stub
-3. Design the type system in `AIL/Core/Types.lean` — replace the stub
-4. Implement a PIC18 emitter skeleton in `AIL/Targets/PIC18/Emitter.lean`
+### What exists and works
+- **Core AST** (`AIL/Core/AST.lean`): Node, ProcBody, AbstractOp, Width, etc.
+- **Type system** (`AIL/Core/Types.lean`): `inferBodyDepth`, `checkStore`, `TyEnv`
+- **Content-addressed store** (`AIL/Core/Store.lean`): FNV-1a hashed, insertion-ordered
+- **PIC18 emitter** (`AIL/Targets/PIC18/Emitter.lean`): full emit pass; see capabilities
+- **PIC18 ISA** (`AIL/Targets/PIC18/ISA.lean`): typed instruction set + node builders
+- **PIC18 capabilities** (`AIL/Targets/PIC18/Capabilities.lean`): machine-queryable
+- **Structured diagnostics** (`AIL/Core/Diagnostic.lean`): typed kinds, JSON output
+- **Static RAM allocator** (`AIL/Core/StaticAlloc.lean`): flat, contiguous allocation
+- **Budget checker** (`AIL/Analysis/BudgetCheck.lean`): RAM + flash estimation
+- **FSR liveness check** (`AIL/Analysis/FSRCheck.lean`)
+- **WREG check** (`AIL/Analysis/WREGCheck.lean`)
+- **Serializer** (`AIL/Core/Serialize.lean`): round-trip encode/decode
+- **Git layout helper** (`AIL/Core/GitLayout.lean`)
+- **PIC18 libraries**: `AIL/Lib/PIC18/RingBuf.lean`, `AIL/Lib/PIC18/INTCON.lean`
+- **25 test exercises** in `TestRunner.lean` (all passing)
 
-### Open design questions (resolve before AST design)
+### Key PIC18 emitter features (implemented)
+- All AbstractOps: arithmetic, bitwise, load/store, compare, indexed, immediate forms
+- All ProcBody forms: atomic, seq, cond, loop, forever, whileLoop, call, intrinsic, critical
+- Banked RAM: MOVLB emission with BSR tracking; addresses ≥ 0x100 emit bank-select
+- IVT section: `GLOBAL` directives + hardware PSECTs at classic PIC18 vector addresses
+- NameTable: named label aliases alongside hash labels (for linker scripts / debuggers)
+- ISR context save/restore: `ISRSaveMode` (none/full/fast); full MOVFF-based prologue/epilogue
+- Critical sections: `ProcBody.critical` emits BCF/BSF around body
+
+### Known limitations (see Capabilities.lean for authoritative list)
+- Subroutine ordering: callees emitted inline at call site, not after caller RETURN
+- Loop bound decrement: 8-bit only; 16/32-bit need multi-byte sequence
+- Save slots fixed at access-bank 0x060+; no FSR3/PRODH/PRODL save
+- `intrinsic` nodes emit raw strings, not typed Insn (pending migration)
+
+### Open design questions (not yet resolved)
 - Does AIL have a textual surface syntax, or is AST-direct the native form?
+  *(Likely both: AST-direct for agents, surface syntax for human review)*
 - What is the right compilation unit granularity for an agent?
-- How much of R2 (agent ergonomics) lives in the type system vs. tooling?
+- Hash collision resistance: FNV-1a is fast but not collision-resistant (see issue)
 
 ---
 
@@ -69,23 +97,48 @@ Bootstrap stage. Stubs only. No real compiler exists yet.
 
 ```
 AIL/
-  lakefile.lean          -- Lake build definition
-  CLAUDE.md              -- THIS FILE. Read first.
+  lakefile.lean             -- Lake build definition
+  lean-toolchain            -- Pinned Lean/Lake version
+  CLAUDE.md                 -- THIS FILE. Read first.
+  TestRunner.lean           -- 25 test exercises (ailtest binary)
+  SeedOfOnan_TODO.txt       -- Project-level TODO scratch pad
   docs/
-    REQUIREMENTS.md      -- Structured requirements inventory
-    TIERS.md             -- Target tier definitions and separation rules
-  AIL/                   -- Library source
-    AIL.lean             -- Root import
+    REQUIREMENTS.md         -- Structured requirements inventory
+    TIERS.md                -- Target tier definitions and separation rules
+    LANGDEF.md              -- Language definition (design decisions)
+    TODO.md                 -- Deferred implementation items
+  AIL/                      -- Library source
+    AIL.lean                -- Root import
     Core/
-      AST.lean           -- Language AST (stub)
-      Types.lean         -- Type system (stub)
+      AST.lean              -- Language AST and ProcBody
+      Types.lean            -- Type system (inferBodyDepth, checkStore)
+      Store.lean            -- Content-addressed node store
+      Hash.lean             -- FNV-1a node serialization + hashing
+      Diagnostic.lean       -- Structured diagnostics (typed kinds, JSON)
+      StaticAlloc.lean      -- Static RAM allocator
+      Capability.lean       -- CapabilityRecord type
+      Serialize.lean        -- Store round-trip serializer
+      GitLayout.lean        -- Content-addressed git layout helper
+    Analysis/
+      FSRCheck.lean         -- FSR liveness analysis
+      WREGCheck.lean        -- WREG usage check
+      BudgetCheck.lean      -- RAM + flash budget estimation
+    Lib/
+      PIC18/
+        RingBuf.lean        -- Ring buffer library (AST-direct)
+        INTCON.lean         -- INTCON/GIE helpers for critical sections
     Targets/
       PIC18/
-        Emitter.lean     -- PIC18 code emitter (stub)
-      Thumb2/            -- (not yet created)
-      Speculative/       -- (not yet created, Tier 3 only)
+        ISA.lean            -- Typed PIC18 instruction set + node builders
+        Emitter.lean        -- PIC18 code emitter
+        Capabilities.lean   -- Machine-queryable capability record
+      Thumb2/               -- (not yet created)
+      Speculative/          -- (not yet created, Tier 3 only)
+  AILApp/                   -- Example application (AST-direct AILApp)
+    src/
+      App.lean              -- Sample PIC18 application
   AILCompiler/
-    Main.lean            -- ailc compiler executable entry point
+    Main.lean               -- ailc compiler executable entry point
 ```
 
 ---
@@ -94,13 +147,12 @@ AIL/
 
 ```powershell
 cd AIL
-lake build
+lake build          # builds all default targets
+lake build ailtest  # builds the test runner
+.lake/build/bin/ailtest  # run all tests (all should PASS)
 ```
 
-Note: `lean_lib` targets are not built by `lake build` without `@[default_target]`.
-That annotation is present in `lakefile.lean`; plain `lake build` works.
-
-Requires Lean 4 + Lake (elan managed).
+Requires Lean 4 + Lake (elan managed). Toolchain version pinned in `lean-toolchain`.
 
 ---
 

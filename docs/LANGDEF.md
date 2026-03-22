@@ -47,10 +47,18 @@ entry(interrupt, priority, save: mode) fn name { body }
 - `priority`: `high` | `low`
   - `high` → vector at `0x0008` (PIC18)
   - `low`  → vector at `0x0018` (PIC18)
-- `save: mode`: `full` | `fast`
-  - `full` → compiler saves/restores WREG, STATUS, BSR, FSRs
-  - `fast` → uses PIC18 shadow registers (only valid for `high`)
+- `save: mode`: `full` | `fast` | `none`
+  - `full` → compiler saves/restores WREG, STATUS, BSR, FSR0–FSR2 (AIL#28)
+  - `fast` → uses PIC18 shadow registers, emits `RETFIE FAST` (high only)
+  - `none` → no compiler save; agent manages context (emits `RETFIE 0`)
 - At most one `high` and one `low` per program
+
+**Implementation status (AIL#28):** `ISRSaveMode` (none/full/fast) is implemented
+in the PIC18 emitter. The `compile` function accepts a `saveModes` array pairing
+each `PIC18Vector` with its save mode. For `full`, the emitter emits a MOVFF-based
+prologue (9 registers saved) and epilogue, allocating save slots at access-bank
+addresses starting at `0x060`. For `fast`, it emits `RETFIE FAST` with no explicit
+save. Save for FSR3 and PRODH/PRODL is not yet included.
 
 **Constraints (all forms):**
 - No parameters, no return value (other than `Never` for reset)
@@ -297,9 +305,11 @@ cleared, it will still complete (RETFIE restores GIE from the stack).
 The critical section protects the body from being *interrupted*, not from
 an already in-progress ISR frame.
 
-**Future:** `ProcBody.critical` as a typed AST node would make critical
-sections inspectable by the compiler (e.g. to verify no nested
-`enable_ints` calls inside the body). For now the `seq` pattern suffices.
+**Implementation status:** `ProcBody.critical (gie body)` is implemented as a
+typed AST node (AIL#27). The emitter emits BCF on `gie` before the body and BSF
+after, making critical sections compiler-inspectable (e.g. nested critical
+detection via `DiagnosticKind.CriticalNested`). The `seq [disable, body, enable]`
+pattern remains valid but `ProcBody.critical` is preferred for new code.
 
 ---
 
