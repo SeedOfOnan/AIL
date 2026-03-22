@@ -1,0 +1,14 @@
+I took these out of environement variables for System:
+C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common
+C:\Program Files\dotnet\
+%USERPROFILE%\AppData\Local\Microsoft\WindowsApps
+PATHEXT=%PATHEXT%;.COM;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC
+%USERPROFILE%\AppData\Local\Microsoft\WindowsApps
+
+3. Common fixes (in order of invasiveness):
+    - Run lean once from an elevated prompt — sometimes policy evaluation works differently there
+    - Check whether you have a WDAC policy or AppLocker in effect: Get-AppLockerPolicy -Effective -Xml or CiTool
+  --list-policies
+    - If it's a user-mode policy, adding C:\Users\GaryF\.elan\toolchains\ to a trusted path rule often fixes it
+  permanently
+    - If you're on a managed machine, your IT policy may need an update for the new lean hash
