@@ -257,6 +257,13 @@ def inferBodyDepth (cfg : TargetConfig) (env : TyEnv) (b : ProcBody) : Option Na
       let _ ← resolveAll env writes
       some 0
 
+  | ProcBody.critical gie body => do
+      -- GIE must be a bool (bitField or flag formal); body must be a proc.
+      guard (env gie == some Ty.bool)
+      match ← env body with
+      | Ty.proc _ _ d => some d
+      | _             => none
+
 def inferTy (cfg : TargetConfig) (env : TyEnv) (n : Node) : Option Ty :=
   match n with
   | Node.data space w _ _              => some (Ty.data space w)

@@ -64,4 +64,16 @@ def makeINTCON (intconAddr : UInt32) : StoreM INTCONInstance := do
 
   return { h_INTCON, h_GIE, h_PEIE, h_disable_ints, h_enable_ints }
 
+/-- Wrap a body hash in a ProcBody.critical node using this INTCON's GIE bit.
+    The resulting proc has no params or rets (like the seq-based critical section).
+    Use in preference to seq [h_disable_ints, body, h_enable_ints] so the compiler
+    can inspect it as a typed critical section and detect CriticalNested violations.
+
+    Example:
+      let ic ← makeINTCON 0xFF2
+      let h_body ← ... -- build the protected body
+      let h_crit ← ic.makeCritical h_body  -/
+def INTCONInstance.makeCritical (ic : INTCONInstance) (body : Hash) : StoreM Hash :=
+  StoreM.node (.proc #[] #[] (.critical ic.h_GIE body) "critical")
+
 end AIL

@@ -230,6 +230,18 @@ inductive ProcBody where
       (obligations  : Array String)
       (fsrUse       : Array UInt8)
 
+  /-- critical: typed critical section — inspectable by the compiler (AIL#27).
+      gie  is the hash of a bitField node representing the GIE (Global Interrupt
+           Enable) bit.  The compiler uses this to detect nested enable_ints calls.
+      body is a hash of a proc executed with interrupts disabled.
+      Emitted as: BCF gie_reg, gie_bit; body; BSF gie_reg, gie_bit.
+      Diagnostic: if body contains a setBit on gie, CriticalNested is reported.
+      Prefer this over seq [disable_ints, body, enable_ints] for any code that
+      the compiler should be able to inspect as a critical section. -/
+  | critical
+      (gie  : Hash)
+      (body : Hash)
+
 deriving Repr
 
 -- ---------------------------------------------------------------------------

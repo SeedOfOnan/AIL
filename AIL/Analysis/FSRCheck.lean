@@ -103,6 +103,8 @@ partial def collectFromBody
       (#[], visited)
   | ProcBody.call callee _ _ _ =>
       collectFromHash s callee visited
+  | ProcBody.critical _ body' =>
+      collectFromHash s body' visited
 
 end
 

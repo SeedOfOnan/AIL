@@ -133,6 +133,9 @@ private def serProcBody : ProcBody → ByteArray
       serU8 0x07 ++ serStrs instructions ++ serHashes reads ++
       serHashes writes ++ serStrs obligations ++ serU8s fsrUse
 
+  | .critical gie body =>
+      serU8 0x0A ++ serHash gie ++ serHash body
+
 -- ---------------------------------------------------------------------------
 -- Node serializer
 -- ---------------------------------------------------------------------------

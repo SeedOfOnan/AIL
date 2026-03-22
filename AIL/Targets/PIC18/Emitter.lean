@@ -489,6 +489,16 @@ partial def emitProcBody (params : Array Hash) (body : ProcBody) : Emit Unit := 
       for obl in obligations do outComment s!"   obligation: {obl}"
       for insn in instructions do out (.raw insn)
 
+  | ProcBody.critical gie body =>
+      -- Typed critical section (AIL#27).
+      -- Emits: BCF gie_reg, gie_bit ; body ; BSF gie_reg, gie_bit.
+      -- The GIE bitField hash is carried in the node so the emitter can
+      -- call resolveBitField rather than hardcoding the register address.
+      let (gieReg, gieBit) ← resolveBitField gie
+      out (.bcf gieReg gieBit)
+      emitNode body
+      out (.bsf gieReg gieBit)
+
 -- Emit `h` as a labeled subroutine (label at top, RETURN at bottom).
 -- Guards against re-emission via the visited set.
 partial def emitSubroutine (h : Hash) : Emit Unit := do

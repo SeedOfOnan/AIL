@@ -72,6 +72,12 @@ inductive DiagnosticKind where
       Fix: change the flag kind to match what the op actually produces, or
       change the op. -/
   | FlagNotProduced
+  /-- A ProcBody.critical body contains a setBit on the GIE bitField, which
+      would re-enable interrupts inside a critical section (AIL#27).
+      This is almost always a bug — the enable_ints call belongs outside the
+      critical section, not inside it.
+      Fix: move the setBit(GIE) outside the critical body, or remove it. -/
+  | CriticalNested
 deriving Repr, BEq, DecidableEq
 
 def DiagnosticKind.toJson : DiagnosticKind → String
@@ -81,6 +87,7 @@ def DiagnosticKind.toJson : DiagnosticKind → String
   | .FSRConflict        => "\"FSRConflict\""
   | .WREGClobber        => "\"WREGClobber\""
   | .FlagNotProduced    => "\"FlagNotProduced\""
+  | .CriticalNested     => "\"CriticalNested\""
 
 -- ---------------------------------------------------------------------------
 -- FixSuggestion  (R5.5 — machine-applicable patches)

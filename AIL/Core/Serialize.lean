@@ -135,6 +135,9 @@ private def serProcBodyS : ProcBody → ByteArray
       serU8S 0x07 ++ serStrsS instructions ++ serHashesS reads ++
       serHashesS writes ++ serStrsS obligations ++ serU8sS fsrUse
 
+  | .critical gie body =>
+      serU8S 0x0A ++ serHashS gie ++ serHashS body
+
 -- Full node encoding: identity fields (same order as nodeBytes) + label.
 -- Tags match nodeBytes tags so decoders can cross-verify with the stored hash.
 private def serNodeFull : Node → ByteArray
@@ -290,6 +293,7 @@ private def readProcBody : Parser ProcBody := do
   | 0x09 => return .whileLoop (← readHash) (← readHash)
   | 0x06 => return .call (← readHash) (← readHashes) (← readHashes) (← readU8)
   | 0x07 => return .intrinsic (← readStrsP) (← readHashes) (← readHashes) (← readStrsP) (← readU8sP)
+  | 0x0A => return .critical (← readHash) (← readHash)
   | t    => throw s!"unknown ProcBody tag {t}"
 
 private def readNodeFull : Parser Node := do

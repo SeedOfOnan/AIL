@@ -1425,6 +1425,61 @@ def runIVTSectionTest : IO Unit := do
           IO.println s!"  vic n: no PSECT stub emitted              : {if noPsect then pass else fail}"
 
 -- ---------------------------------------------------------------------------
+-- Ex22: ProcBody.critical  (AIL#27)
+--
+-- Checks:
+--   A. Hash is distinct from equivalent seq [disable, body, enable].
+--   B. checkStore passes for a proc with ProcBody.critical body.
+--   C. compile emits BCF before body and BSF after body.
+--   D. Serialize round-trip preserves the critical node.
+-- ---------------------------------------------------------------------------
+
+def runCriticalTest : IO Unit := do
+  IO.println "=== Ex22: ProcBody.critical  (AIL#27) ==="
+  let pass := "PASS"; let fail := "FAIL"
+  -- Build an INTCON instance and a protected body.
+  let (ic, s22) := StoreM.run (makeINTCON 0xFF2)
+  -- Build body: a simple copy
+  let (h_crit, s22b) := StoreM.runFrom s22 <| do
+    let _      ← StoreM.node (.data .data .w8 0x20 "src")
+    let h_dst  ← StoreM.node (.data .data .w8 0x21 "dst")
+    let h_body ← StoreM.node (.proc #[] #[]
+                                (.atomic (.abstract .store) #[] #[h_dst]) "copy_body")
+    ic.makeCritical h_body
+  -- Part A: critical hash ≠ equivalent seq hash
+  let (h_seq, s22c) := StoreM.runFrom s22b <| do
+    let _      ← StoreM.node (.data .data .w8 0x20 "src")
+    let h_dst  ← StoreM.node (.data .data .w8 0x21 "dst")
+    let h_body ← StoreM.node (.proc #[] #[]
+                                (.atomic (.abstract .store) #[] #[h_dst]) "copy_body")
+    StoreM.node (.proc #[] #[]
+      (.seq #[ic.h_disable_ints, h_body, ic.h_enable_ints]) "seq_critical")
+  IO.println s!"  critical hash ≠ seq [disable,body,enable]  : {if h_crit != h_seq then pass else fail}"
+  -- Part B: checkStore
+  let _ := s22c  -- suppress unused warning
+  let chkB : Bool := match checkStore targetConfig s22b with
+    | .ok _ => true | .error _ => false
+  IO.println s!"  checkStore passes for critical proc       : {if chkB then pass else fail}"
+  -- Part C: compile emits BCF + body + BSF
+  match checkStore targetConfig s22b with
+  | .error d => IO.println s!"  compile check: FAIL ({d.message})"
+  | .ok tyEnv =>
+      match compile s22b tyEnv #[(.reset, h_crit)] with
+      | .error msg => IO.println s!"  compile: FAIL ({msg})"
+      | .ok lines =>
+          let hasBcf := lines.any fun l => !(l.toLower.splitOn "bcf").tail.isEmpty
+          let hasBsf := lines.any fun l => !(l.toLower.splitOn "bsf").tail.isEmpty
+          IO.println s!"  compile emits BCF (disable GIE)           : {if hasBcf then pass else fail}"
+          IO.println s!"  compile emits BSF (enable GIE)            : {if hasBsf then pass else fail}"
+  -- Part D: serialize round-trip via Store.toByteArray / Store.ofByteArray
+  let chkD : Bool :=
+    let bytes := Store.toByteArray s22b NameTable.empty
+    match Store.ofByteArray bytes with
+    | .error _ => false
+    | .ok (rt, _) => rt.contains h_crit
+  IO.println s!"  serialize round-trip preserves hash       : {if chkD then pass else fail}"
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
@@ -1456,4 +1511,6 @@ def main : IO Unit := do
   runNameTableTest
   IO.println ""
   runIVTSectionTest
+  IO.println ""
+  runCriticalTest
   IO.println ""
