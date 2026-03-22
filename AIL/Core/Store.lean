@@ -46,6 +46,43 @@ def hashes (s : Store) : Array Hash :=
 end Store
 
 -- ---------------------------------------------------------------------------
+-- StoreM: builder monad for constructing a Store (AIL issue #18, R6.1)
+--
+-- Eliminates the manual `let h := hashNode n; Store.insert s h n` pairing.
+-- The agent names things; the monad computes hashes and threads the store.
+--
+-- Usage:
+--   def myBuild : StoreM MyResult := do
+--     let h_a ← StoreM.node (.data .data .w8 0x20 "a")
+--     let h_b ← StoreM.node (.formal 1 .bool)
+--     return { h_a, h_b }
+--   let (result, store) := StoreM.run myBuild
+-- ---------------------------------------------------------------------------
+
+/-- Builder monad for constructing a Store.
+    `StoreM.node n` hashes n, inserts it into the running store, and returns
+    its hash. The agent names things; the monad computes hashes and threads
+    the store state invisibly. (AIL R6.1) -/
+abbrev StoreM := StateM Store
+
+namespace StoreM
+
+/-- Insert a node into the running store, returning its hash. -/
+def node (n : Node) : StoreM Hash :=
+  let h := hashNode n
+  modify (Store.insert · h n) *> pure h
+
+/-- Run the builder starting from Store.empty. Returns (result, store). -/
+def run (m : StoreM α) : α × Store :=
+  StateT.run m Store.empty
+
+/-- Run the builder starting from an existing store. Returns (result, store). -/
+def runFrom (s : Store) (m : StoreM α) : α × Store :=
+  StateT.run m s
+
+end StoreM
+
+-- ---------------------------------------------------------------------------
 -- Named roots
 -- A "version" or "program entry point" is a name mapped to a root Hash.
 -- Names are metadata: changing a name does not change any node's identity.
