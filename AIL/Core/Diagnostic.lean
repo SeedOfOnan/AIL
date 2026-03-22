@@ -61,6 +61,11 @@ inductive DiagnosticKind where
   /-- An ISR-reachable intrinsic and a main-reachable intrinsic both declare
       the same FSR in their fsrUse field (AIL#13). -/
   | FSRConflict
+  /-- A WREG-defining op's result is clobbered before it is consumed: a later
+      op in the same seq writes WREG before the first result is read (AIL#22).
+      Fix: insert an explicit store-to-temp before the clobbering op, or
+      reorder the seq steps so the consumer precedes the next definer. -/
+  | WREGClobber
 deriving Repr, BEq, DecidableEq
 
 def DiagnosticKind.toJson : DiagnosticKind → String
@@ -68,6 +73,7 @@ def DiagnosticKind.toJson : DiagnosticKind → String
   | .TypeCheckFailure   => "\"TypeCheckFailure\""
   | .ReadClearsUnacked  => "\"ReadClearsUnacked\""
   | .FSRConflict        => "\"FSRConflict\""
+  | .WREGClobber        => "\"WREGClobber\""
 
 -- ---------------------------------------------------------------------------
 -- FixSuggestion  (R5.5 — machine-applicable patches)

@@ -80,10 +80,14 @@ private def serAccessSemanticsS (a : AccessSemantics) : ByteArray :=
   serBoolS a.sideEffectOnRead ++ serBoolS a.sideEffectOnWrite ++
   serWidthS a.accessWidth
 
+private def serRegKindS : RegKind → ByteArray
+  | .wreg => serU8S 0
+
 private def serFormalKindS : FormalKind → ByteArray
   | .data space width => serU8S 0 ++ serAddrSpaceS space ++ serWidthS width
   | .bool             => serU8S 1
   | .unit             => serU8S 2
+  | .reg r            => serU8S 3 ++ serRegKindS r
 
 private def serAbstractOpS : AbstractOp → ByteArray
   | .add         => serU8S  0  | .sub         => serU8S  1  | .mul         => serU8S  2
@@ -223,11 +227,17 @@ private def readAccessSemantics : Parser AccessSemantics := do
   let accessWidth       ← readWidth
   return { readable, writable, sideEffectOnRead, sideEffectOnWrite, accessWidth }
 
+private def readRegKind : Parser RegKind := do
+  match ← readU8 with
+  | 0 => return .wreg
+  | t => throw s!"unknown RegKind tag {t}"
+
 private def readFormalKind : Parser FormalKind := do
   match ← readU8 with
   | 0 => return .data (← readAddrSpace) (← readWidth)
   | 1 => return .bool
   | 2 => return .unit
+  | 3 => return .reg (← readRegKind)
   | t => throw s!"unknown FormalKind tag {t}"
 
 private def readAbstractOp : Parser AbstractOp := do

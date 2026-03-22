@@ -68,10 +68,14 @@ private def serAccessSemantics (a : AccessSemantics) : ByteArray :=
   serBool a.sideEffectOnRead ++ serBool a.sideEffectOnWrite ++
   serWidth a.accessWidth
 
+private def serRegKind : RegKind → ByteArray
+  | .wreg => serU8 0
+
 private def serFormalKind : FormalKind → ByteArray
   | .data space width => serU8 0 ++ serAddrSpace space ++ serWidth width
   | .bool             => serU8 1
   | .unit             => serU8 2
+  | .reg r            => serU8 3 ++ serRegKind r
 
 private def serAbstractOp : AbstractOp → ByteArray
   | .add         => serU8  0  | .sub         => serU8  1  | .mul         => serU8  2

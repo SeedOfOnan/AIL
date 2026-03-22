@@ -38,6 +38,9 @@ inductive Ty : Type where
       Satisfies any return type context (bottom of the subtype lattice).
       Used for: entry(reset) implicit return, user-defined panic. -/
   | never  : Ty
+  /-- A machine register. Tier 1: only .wreg is defined (AIL#21).
+      Procs that take or produce WREG declare it as an explicit formal of this type. -/
+  | reg (r : RegKind) : Ty
   /-- A callable proc.
       params, rets: typed formal inputs and outputs (may include Ty.bool for flags).
       maxBodyDepth: max additional call stack frames consumed transitively.
@@ -50,6 +53,7 @@ def formalTy : FormalKind → Ty
   | .data space width => Ty.data space width
   | .bool             => Ty.bool
   | .unit             => Ty.unit
+  | .reg r            => Ty.reg r
 
 -- ---------------------------------------------------------------------------
 -- Type environment

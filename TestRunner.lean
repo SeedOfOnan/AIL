@@ -15,7 +15,7 @@ import AIL
 import AIL.Targets.PIC18.Emitter
 import AIL.Targets.PIC18.Capabilities
 
-open AIL AIL.PIC18 AIL.GitLayout
+open AIL AIL.PIC18 AIL.GitLayout AIL.WREGCheck
 
 -- ---------------------------------------------------------------------------
 -- Test harness
@@ -1091,6 +1091,86 @@ def runGitLayoutTest : IO Unit := do
   IO.println s!"  bad line rejected             : {if chk8 then pass else fail}"
 
 -- ---------------------------------------------------------------------------
+-- Ex17: WREG clobber checker  (AIL#21 + AIL#22)
+--
+-- Tests FormalKind.reg .wreg (AIL#21) and the WREGCheck analysis pass (AIL#22).
+--
+-- Part A — FormalKind round-trip:
+--   Create a formal node with kind = FormalKind.reg .wreg.
+--   Verify it hashes distinctly from kind = FormalKind.data .data .w8.
+--   Verify inferTy returns Ty.reg .wreg.
+--
+-- Part B — wregEffect classification:
+--   Spot-check a selection of AbstractOp → WREGEffect mappings.
+--
+-- Part C — checkWREGSeq clean seq (no conflict):
+--   Build: movImm 0x37  ▷  store dst
+--   Expected: empty diagnostics (movImm defines, store consumes — no clobber).
+--
+-- Part D — checkWREGSeq conflict seq (clobber detected):
+--   Build: movImm 0x37  ▷  movImm 0x00  ▷  store dst
+--   Expected: one WREGClobber warning on the second movImm (clobbers the first).
+-- ---------------------------------------------------------------------------
+
+def runWREGCheckTest : IO Unit := do
+  IO.println "=== Ex17: WREG clobber checker  (AIL#21 + AIL#22) ==="
+  let pass := "PASS"; let fail := "FAIL"
+  -- -------------------------------------------------------------------------
+  -- Part A — FormalKind.reg .wreg in the type system
+  -- -------------------------------------------------------------------------
+  let f_wreg : Node := .formal 0 (.reg .wreg)
+  let f_data : Node := .formal 0 (.data .data .w8)
+  let chkA1 : Bool := hashNode f_wreg != hashNode f_data  -- distinct hash
+  let chkA2 : Bool := match inferTy targetConfig (fun _ => none) f_wreg with
+    | some (Ty.reg .wreg) => true | _ => false
+  IO.println s!"  FormalKind.reg .wreg has distinct hash : {if chkA1 then pass else fail}"
+  IO.println s!"  inferTy f_wreg = Ty.reg .wreg          : {if chkA2 then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- Part B — wregEffect spot checks
+  -- -------------------------------------------------------------------------
+  let chkB1 : Bool := wregEffect .load        == .defines
+  let chkB2 : Bool := wregEffect .store       == .consumes
+  let chkB3 : Bool := wregEffect (.addImm 1)  == .consumesAndDefines
+  let chkB4 : Bool := wregEffect .setBit      == .none
+  let chkB5 : Bool := wregEffect (.movImm 0)  == .defines
+  let chkB6 : Bool := wregEffect .indexLoad   == .defines
+  IO.println s!"  wregEffect .load = defines             : {if chkB1 then pass else fail}"
+  IO.println s!"  wregEffect .store = consumes           : {if chkB2 then pass else fail}"
+  IO.println s!"  wregEffect .addImm = consumesAndDefines: {if chkB3 then pass else fail}"
+  IO.println s!"  wregEffect .setBit = none              : {if chkB4 then pass else fail}"
+  IO.println s!"  wregEffect .movImm = defines           : {if chkB5 then pass else fail}"
+  IO.println s!"  wregEffect .indexLoad = defines        : {if chkB6 then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- Part C — clean seq: movImm ▷ store (no conflict)
+  -- -------------------------------------------------------------------------
+  let (h_seq_clean, store_clean) := StoreM.run <| do
+    let h_dst   ← StoreM.node (.data .data .w8 0x21 "dst")
+    let h_load  ← StoreM.node (.proc #[] #[] (.atomic (.abstract (.movImm 0x37)) #[] #[]) "movImm_37")
+    let h_stor  ← StoreM.node (.proc #[] #[h_dst] (.atomic (.abstract .store) #[] #[h_dst]) "store_dst")
+    StoreM.node (.proc #[] #[] (.seq #[h_load, h_stor]) "clean_seq")
+  let diags_clean := checkWREGSeq store_clean h_seq_clean
+  let chkC : Bool := diags_clean.isEmpty
+  IO.println s!"  clean seq: no WREGClobber diagnostics  : {if chkC then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- Part D — clobber seq: movImm ▷ movImm ▷ store (second movImm clobbers first)
+  -- -------------------------------------------------------------------------
+  let (h_seq_bad, store_bad) := StoreM.run <| do
+    let h_dst    ← StoreM.node (.data .data .w8 0x21 "dst")
+    let h_mov1   ← StoreM.node (.proc #[] #[] (.atomic (.abstract (.movImm 0x37)) #[] #[]) "movImm_37")
+    let h_mov2   ← StoreM.node (.proc #[] #[] (.atomic (.abstract (.movImm 0x00)) #[] #[]) "movImm_00")
+    let h_stor   ← StoreM.node (.proc #[] #[h_dst] (.atomic (.abstract .store) #[] #[h_dst]) "store_dst")
+    StoreM.node (.proc #[] #[] (.seq #[h_mov1, h_mov2, h_stor]) "bad_seq")
+  let diags_bad := checkWREGSeq store_bad h_seq_bad
+  let chkD1 : Bool := diags_bad.size == 1
+  let chkD2 : Bool := match diags_bad[0]? with
+    | some d => match d.kind, d.severity with
+                | .WREGClobber, .warning => true
+                | _, _                  => false
+    | none   => false
+  IO.println s!"  clobber seq: exactly 1 WREGClobber     : {if chkD1 then pass else fail}"
+  IO.println s!"  clobber diag: kind=WREGClobber warning : {bif chkD2 then pass else fail}"
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
@@ -1112,4 +1192,6 @@ def main : IO Unit := do
   runSerializeTest
   IO.println ""
   runGitLayoutTest
+  IO.println ""
+  runWREGCheckTest
   IO.println ""

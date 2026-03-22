@@ -62,13 +62,21 @@ deriving Repr, BEq
 -- Types.lean maps to Ty.
 -- ---------------------------------------------------------------------------
 
+/-- Machine register kinds.
+    Tier 1: PIC18 has one accumulator (WREG). Tier 2 will extend this. -/
+inductive RegKind where
+  | wreg  -- WREG: the 8-bit accumulator; implicit operand for most PIC18 ALU ops
+deriving Repr, BEq, DecidableEq
+
 /-- The kind of a formal parameter or return value.
     Formals with kind = data will be bound to data/peripheral nodes at call sites.
-    Formals with kind = bool carry status register outputs (C, Z, OV, N, DC, ...). -/
+    Formals with kind = bool carry status register outputs (C, Z, OV, N, DC, ...).
+    Formals with kind = reg carry machine register values (AIL#21). -/
 inductive FormalKind where
   | data (space : AddrSpace) (width : Width)  -- binds to a data or peripheral node
   | bool                                       -- a status flag or boolean condition
   | unit                                       -- a computation producing no value
+  | reg  (r : RegKind)                         -- a machine register (typed calling convention)
 deriving Repr, BEq, DecidableEq
 
 -- ---------------------------------------------------------------------------
