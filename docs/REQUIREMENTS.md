@@ -57,6 +57,69 @@ The following is a structured inventory of agent tasks, to be elaborated:
 - R3.2 Target parameterization: same source, multiple targets where possible
 - R3.3 Test/verification artifacts as first-class repository citizens
 
+### R5 — Agent-compiler interface
+
+The compiler's output is consumed by an AI agent, not read by a human.
+Error messages and diagnostic output must be designed accordingly.
+
+- R5.1 **Structured diagnostics.** Errors are emittable as typed records (JSON or
+  S-expression), not only as human prose. The agent receives a machine-readable
+  object it can pattern-match, not a string to parse.
+
+- R5.2 **Hash-addressed errors.** Since AIL has no text source, errors reference
+  nodes by their content hash. The hash uniquely identifies the problematic node
+  in the Store; no source line numbers.
+
+- R5.3 **No cascade errors.** Emit only root causes, or clearly mark which
+  diagnostics are consequences of a root. An agent acting on 40 cascade errors
+  wastes context; it needs one actionable fact.
+
+- R5.4 **Closed error taxonomy.** Error *kinds* are a finite enum, not free-form
+  English text. Prose descriptions are advisory comments on the record, not the
+  data the agent acts on. This makes agent error-handling code straightforward.
+
+- R5.5 **Structured fix suggestions.** Where the compiler can determine the
+  correction, it emits a structured patch (e.g. `{ insert_formal: { node: ...,
+  position: 0 } }`), not a human-readable hint. The agent applies it; it does
+  not interpret advice.
+
+- R5.6 **Machine-queryable capability boundary.** The set of constructs the
+  compiler can currently emit for a given target must be queryable (e.g.
+  `ailc capabilities --target pic18`). An agent must never have to remember
+  cross-session which language constructs are implemented. The compiler is the
+  authority; manual `-- TODO: unimplemented` annotations in source are a
+  stop-gap only.
+
+### R6 — Compiler-managed bookkeeping (derived from AILApp experience)
+
+The following concerns arose during AST-direct AILApp development where the
+agent was forced to manage them manually. Each is properly a compiler
+responsibility:
+
+- R6.1 **Implicit content-addressed identity.** The agent names things; the
+  compiler computes hashes. Manual `hashNode` threading is boilerplate that
+  obscures program structure and is error-prone.
+
+- R6.2 **Formal uniqueness enforcement.** UIDs for formals (e.g. `boolUid`)
+  must be unique across a Store. The compiler enforces this; the agent does not.
+
+- R6.3 **Static RAM allocation.** `static` declarations are assigned addresses
+  by the linker, not by the agent. The agent states the name and type; the
+  compiler satisfies R1.5 (RAM budget checking).
+
+- R6.4 **Implicit library node integration.** When an agent uses a library proc,
+  its backing nodes are automatically in scope. Manual `Store.foldl insert`
+  merging is plumbing that should be invisible.
+
+- R6.5 **Register allocation.** Even a minimal register allocator eliminates
+  the need for hand-introduced spill variables (e.g. the `temp` scratch byte
+  in the ring buffer push). Related to FSR tracking (see issue #13).
+
+- R6.6 **Typed calling convention.** WREG as an implicit side-channel between
+  nodes is untracked and uncheckable. A typed register model (explicit WREG
+  in/out in proc signatures) makes this a compiler-checked fact. Related to
+  typed ISA nodes (see issue #9).
+
 ### R4 — Speculative (Tier 3 aspirations, flagged)
 
 - R4.1 Non-deterministic / approximate computation representable in AST

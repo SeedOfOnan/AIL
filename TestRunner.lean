@@ -611,13 +611,6 @@ def ex08_ringbuf : Example :=
 --     (b) FSR resource annotation in the type system so the compiler can
 --     detect conflicting uses at build time (AIL#13).
 --
---   DESIGN GAP B — Blocking spin / while-loop (AIL#15)
---     getch needs "spin while is_empty".  ProcBody.forever has no exit;
---     ProcBody.whileLoop (loop-with-condition) does not yet exist.
---     Workaround: getch_spin is a ProcBody.intrinsic with local assembly
---     labels (_getch_spin / _getch_done) that jumps back or falls through.
---     TODO: once ProcBody.whileLoop exists, replace getch_spin with a typed node.
---
 --   DESIGN GAP C — Literal-operand instructions (AIL#12)
 --     '\n' detection uses xorlw 0x0A — no AbstractOp covers literal operands
 --     (xorImm, addImm, andImm, etc.).  Workaround: ProcBody.intrinsic.
@@ -693,29 +686,17 @@ def ex09_main_loop : Example :=
   let h_is_empty := hashNode n_is_empty
 
   -- -------------------------------------------------------------------------
-  -- getch_spin: spin until non-empty, then fall through.
+  -- getch_spin: spin until non-empty — whileLoop(is_empty, nop).
   --
-  -- DESIGN GAP B: this must be ProcBody.intrinsic because AIL has no
-  -- ProcBody.whileLoop.  The assembly uses two local labels: _getch_spin
-  -- and _getch_done.  These are unique here because getch_spin is inlined
-  -- exactly once (as a step of getch's seq body).
-  --
-  -- When ProcBody.whileLoop exists, this node is replaced by:
-  --   ProcBody.whileLoop (cond := h_is_empty) (body := h_nop)
-  -- and getch becomes seq [whileLoop h_is_empty h_nop, h_pop].
+  -- is_empty (h_is_empty) ends with CPFSEQ — skips when head==tail (TRUE=empty).
+  -- whileLoop loops while is_empty is TRUE (i.e. while the buffer is empty).
+  -- Body is a nop (empty seq) — just spin waiting.
+  -- Exits when is_empty is FALSE (head != tail, byte available).
   -- -------------------------------------------------------------------------
+  let n_getch_nop : Node := .proc #[] #[] (.seq #[]) "getch_nop"
+  let h_getch_nop := hashNode n_getch_nop
   let n_getch_spin : Node := .proc #[] #[]
-    (.intrinsic
-      #["_getch_spin:",
-        s!"    movf    {hashLabel rb.h_tail}, w, c",
-        s!"    cpfseq  {hashLabel rb.h_head}, c",
-        "    goto    _getch_done",
-        "    goto    _getch_spin",
-        "_getch_done:"]
-      #[rb.h_head, rb.h_tail] #[]
-      #["spin until ring buffer non-empty; fall through when head != tail",
-        "TODO: replace with ProcBody.whileLoop once AIL#15 is implemented"])
-    "getch_spin"
+    (.whileLoop h_is_empty h_getch_nop) "getch_spin"
   let h_getch_spin := hashNode n_getch_spin
 
   -- -------------------------------------------------------------------------
@@ -847,6 +828,7 @@ def ex09_main_loop : Example :=
   let s := Store.insert s h_bool_empty   n_bool_empty
   let s := Store.insert s h_bool_nl      n_bool_nl
   let s := Store.insert s h_is_empty     n_is_empty
+  let s := Store.insert s h_getch_nop    n_getch_nop
   let s := Store.insert s h_getch_spin   n_getch_spin
   let s := Store.insert s h_pop          n_pop
   let s := Store.insert s h_getch        n_getch

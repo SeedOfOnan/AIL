@@ -432,6 +432,26 @@ partial def emitProcBody (params : Array Hash) (body : ProcBody) : Emit Unit := 
       emitNode body
       out (.goto_ lblTop)
 
+  | ProcBody.whileLoop cond body =>
+      -- Conditional loop: execute body while cond evaluates to TRUE.
+      -- Uses the PIC18 skip protocol: the cond proc ends with a skip instruction
+      -- that skips the next instruction when the condition is TRUE.
+      -- Emitted as:
+      --   _while_N:
+      --     <cond>               ; ends with skip-when-TRUE instruction
+      --     goto _whileDone_N    ; executed when FALSE (exit); SKIPPED when TRUE
+      --     <body>               ; executes when TRUE
+      --     goto _while_N        ; loop back
+      --   _whileDone_N:
+      let lblTop  ← freshLabel "while"
+      let lblDone ← freshLabel "whileDone"
+      out (.lbl lblTop)
+      emitNode cond
+      out (.goto_ lblDone)   -- skipped when condition TRUE (fall through to body)
+      emitNode body
+      out (.goto_ lblTop)
+      out (.lbl lblDone)
+
   | ProcBody.call callee _args _retBinds callDepth =>
       -- Emit a CALL to the callee subroutine.
       -- args/retBinds are type-checked by checkStore. At this point the emitter

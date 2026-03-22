@@ -158,11 +158,21 @@ inductive ProcBody where
       body is a hash of a proc executed each iteration.
       Used for: main entry-point event loops, task loops, spin-wait stubs.
       There is no break or early-exit mechanism — the body runs forever.
-      TODO: add ProcBody.whileLoop (body : Hash) (cond : Hash) for loops that
-            can exit; forever is just the degenerate case (always-true condition).
-            Without whileLoop, blocking patterns (e.g. getch spin-wait) must
-            use ProcBody.intrinsic as a workaround. -/
+      See ProcBody.whileLoop for loops that can exit. -/
   | forever
+      (body : Hash)
+
+  /-- whileLoop: conditional loop — execute body while condition is true.
+      cond must be a hash of a proc typed proc [] [Bool] 0.
+      The condition proc uses the PIC18 skip protocol: it ends with a skip
+      instruction (CPFSEQ, BTFSC, BTFSS, etc.) that skips the next instruction
+      when the condition is TRUE.
+      body is a hash of a proc executed each iteration when cond is TRUE.
+      The loop exits when cond evaluates to FALSE (no skip occurs).
+      Emitted as: label_top; cond; goto label_done; body; goto label_top; label_done.
+      Replaces ProcBody.intrinsic workarounds for spin-wait and polling loops. -/
+  | whileLoop
+      (cond : Hash)
       (body : Hash)
 
   /-- call: invoke a proc at this call site, with explicit argument binding.

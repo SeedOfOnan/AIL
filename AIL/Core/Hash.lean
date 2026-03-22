@@ -106,6 +106,9 @@ private def serProcBody : ProcBody → ByteArray
   | .forever body =>
       serU8 0x08 ++ serHash body
 
+  | .whileLoop cond body =>
+      serU8 0x09 ++ serHash cond ++ serHash body
+
   | .call callee args retBinds callDepth =>
       serU8 0x06 ++ serHash callee ++ serHashes args ++
       serHashes retBinds ++ serU8 callDepth
