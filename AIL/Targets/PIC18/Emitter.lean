@@ -600,6 +600,26 @@ private def fmtHex4 (n : UInt32) : String :=
     if nibble < 10 then toString nibble else String.singleton (Char.ofNat (nibble - 10 + 'a'.toNat))
   s!"{d 12}{d 8}{d 4}{d 0}h"
 
+/-- ISR context save/restore mode (AIL#28).
+    Selects what the emitter emits around the ISR body.
+
+    - `none`:  No save/restore emitted. Used for the reset vector (program
+               entry — not an ISR) or bare ISRs where the agent manages context.
+               Emits `return` for reset, `retfie 0` for interrupt vectors.
+    - `full`:  Compiler emits full context save/restore:
+               prologue saves WREG, STATUS, BSR, FSR0L/H, FSR1L/H, FSR2L/H
+               into access-bank slots; epilogue restores in reverse order
+               and emits `retfie 0`.  Valid for both hi- and low-priority ISRs.
+    - `fast`:  Shadow-register save (high-priority ISR only).
+               No explicit save emitted; emits `retfie FAST`.  The hardware
+               saves/restores WREG, STATUS, BSR via shadow registers on
+               classic PIC18 and Q71 devices. -/
+inductive ISRSaveMode where
+  | none   -- no compiler save/restore (reset vector, or agent-managed)
+  | full   -- full software save/restore (MOVFF-based)
+  | fast   -- hardware shadow-register save (RETFIE FAST; hi-priority only)
+  deriving Repr, BEq
+
 /-- Interrupt vector table entry: (symbolic vector, proc_hash).
     The proc must satisfy Ty.proc [] [] d with d ≤ cfg.maxCallDepth. -/
 abbrev IVTEntry := PIC18Vector × Hash
@@ -629,14 +649,68 @@ abbrev IVTEntry := PIC18Vector × Hash
           absolute psects at 0x0000 / 0x0008 / 0x0018). -/
 def compile (store : Store) (tyEnv : TyEnv) (ivt : Array IVTEntry)
     (nameTable : NameTable := NameTable.empty)
+    (saveModes : Array (PIC18Vector × ISRSaveMode) := #[])
     : Except String (Array String) := do
   let initState : EmitState := { store, tyEnv, nameTable }
+  -- Resolve the ISRSaveMode for a vector (default: .none).
+  let saveMode (vec : PIC18Vector) : ISRSaveMode :=
+    match saveModes.findSome? (fun (v, m) => if v == vec then some m else none) with
+    | some m => m
+    | none   => .none
+  -- ISR context save slot base address in the access bank (AIL#28).
+  -- Each full-save ISR uses 9 contiguous bytes starting at:
+  --   0x060 + isrIndex * 9
+  -- where isrIndex counts only ISRs with saveMode = .full, in IVT order.
+  -- The slot names are: _ail_save_{vecName}_{field} (e.g. _ail_save_hiISR_wreg).
+  -- These are defined as EQU pseudo-ops in the data section.
+  let mkSaveSlotEQUs (vec : PIC18Vector) (baseAddr : UInt32) : Array String :=
+    let n := vec.name
+    let fields : Array String := #["wreg", "status", "bsr", "fsr0l", "fsr0h", "fsr1l", "fsr1h", "fsr2l", "fsr2h"]
+    fields.mapIdx fun i f =>
+      s!"_ail_save_{n}_{f}  EQU  {baseAddr.toNat + i}"
+  -- Emit ISR prologue: save WREG, STATUS, BSR, FSRs to access-bank slots.
+  -- Uses MOVWF for WREG (doesn't touch STATUS), MOVFF for STATUS/BSR/FSRs.
+  let emitPrologue (vec : PIC18Vector) : Emit Unit := do
+    let n := vec.name
+    out (.comment s!" ISR prologue: save context ({n}, full)")
+    out (.movwf  s!"_ail_save_{n}_wreg")
+    out (.movff  "STATUS"  s!"_ail_save_{n}_status")
+    out (.movff  "BSR"     s!"_ail_save_{n}_bsr")
+    out (.movff  "FSR0L"   s!"_ail_save_{n}_fsr0l")
+    out (.movff  "FSR0H"   s!"_ail_save_{n}_fsr0h")
+    out (.movff  "FSR1L"   s!"_ail_save_{n}_fsr1l")
+    out (.movff  "FSR1H"   s!"_ail_save_{n}_fsr1h")
+    out (.movff  "FSR2L"   s!"_ail_save_{n}_fsr2l")
+    out (.movff  "FSR2H"   s!"_ail_save_{n}_fsr2h")
+  -- Emit ISR epilogue: restore in reverse order; restore STATUS last via MOVFF
+  -- so the STATUS we set with MOVFF sticks (MOVFF doesn't modify STATUS).
+  let emitEpilogue (vec : PIC18Vector) : Emit Unit := do
+    let n := vec.name
+    out (.comment s!" ISR epilogue: restore context ({n}, full)")
+    out (.movff  s!"_ail_save_{n}_fsr2h" "FSR2H")
+    out (.movff  s!"_ail_save_{n}_fsr2l" "FSR2L")
+    out (.movff  s!"_ail_save_{n}_fsr1h" "FSR1H")
+    out (.movff  s!"_ail_save_{n}_fsr1l" "FSR1L")
+    out (.movff  s!"_ail_save_{n}_fsr0h" "FSR0H")
+    out (.movff  s!"_ail_save_{n}_fsr0l" "FSR0L")
+    out (.movff  s!"_ail_save_{n}_bsr"   "BSR")
+    out (.movf   s!"_ail_save_{n}_wreg"  .w)
+    out (.movff  s!"_ail_save_{n}_status" "STATUS")
   -- Emit each IVT entry as a labeled subroutine.
   -- The vec label (_ail_vec{n}) is the stable name callers / linker scripts use.
   -- The hash label is also emitted so callees can CALL/GOTO by content address.
   let emitIVT : Emit Unit := do
+    -- Count ISRs with full-save mode to assign sequential save-slot addresses.
+    let mut fullSaveIdx : Nat := 0
     for (vec, h) in ivt do
       let vecNum := vec.toVecNum
+      let mode   := saveMode vec
+      -- Collect save-slot EQUs if this is a full-save ISR.
+      if mode == .full then
+        let baseAddr : UInt32 := 0x060 + (fullSaveIdx * 9).toUInt32
+        let equs := mkSaveSlotEQUs vec baseAddr
+        modify fun s => { s with dataDecls := s.dataDecls ++ equs }
+        fullSaveIdx := fullSaveIdx + 1
       if ← wasVisited h then
         -- Proc already emitted (shared across two vectors); emit a redirect.
         out (.global s!"_ail_vec{vecNum}")
@@ -648,17 +722,26 @@ def compile (store : Store) (tyEnv : TyEnv) (ivt : Array IVTEntry)
         out (.lbl s!"_ail_vec{vecNum}")
         out (.lbl (hashLabel h))
         emitNamedLabels h  -- emit named aliases if any (AIL#25)
+        if mode == .full then emitPrologue vec
         emitNode h
-        -- Suppress trailing RETURN if the proc never returns.
+        -- Suppress trailing RETFIE/RETURN if the proc never returns.
         -- Two cases: explicit Ty.never return type, or a ProcBody.forever body
-        -- (which loops unconditionally; its trailing RETURN would be dead code).
+        -- (which loops unconditionally; its trailing return would be dead code).
         let isForever := match (← get).store.lookup h with
           | some (Node.proc _ _ (ProcBody.forever _) _) => true
           | _                                            => false
         let isNever := match (← get).tyEnv h with
           | some (Ty.proc _ [Ty.never] _) => true
           | _                              => false
-        if !(isForever || isNever) then out .return_
+        if !(isForever || isNever) then
+          match mode with
+          | .full => emitEpilogue vec; out (.retfie false)
+          | .fast => out (.retfie true)
+          | .none =>
+            -- Reset vector gets RETURN; interrupt vectors (no save) get RETFIE 0.
+            match vec with
+            | .reset => out .return_
+            | _      => out (.retfie false)
   let (_, final) ← emitIVT.run initState
   -- Data section: EQU declarations collected during the emit pass.
   -- These must precede the code section so forward references resolve.

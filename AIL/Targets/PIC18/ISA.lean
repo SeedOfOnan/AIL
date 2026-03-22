@@ -88,6 +88,8 @@ inductive Insn where
   | bra    (lbl : String)           -- BRA   label       ; short relative branch
   | return_                         -- RETURN
   | retfie (fast : Bool)            -- RETFIE [FAST]     ; return from interrupt
+  -- Move file to file (12-bit src/dst; does not affect STATUS, BSR, or WREG)
+  | movff  (src dst : String)        -- MOVFF fs, fd ; fs → fd (access any address)
   -- Bank select
   | movlb  (bank : UInt8)            -- MOVLB k      ; k → BSR (select GPR bank 0–15)
   -- FSR indirect
@@ -156,6 +158,7 @@ def renderInsn : Insn → String
   | .call   lbl   => s!"    call    {lbl}, 0"
   | .goto_  lbl   => s!"    goto    {lbl}"
   | .bra    lbl   => s!"    bra     {lbl}"
+  | .movff  s d   => s!"    movff   {s}, {d}"
   | .movlb  bank  => s!"    movlb   {bank}"
   | .lfsr   f sym => s!"    lfsr    {f}, {sym}"
   | .return_      => s!"    return"

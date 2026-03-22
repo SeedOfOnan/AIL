@@ -1590,6 +1590,104 @@ def runBankedRAMTest : IO Unit := do
           IO.println s!"  same bank: MOVLB emitted once (got {movlbCount}) : {if movlbCount == 1 then pass else fail}"
 
 -- ---------------------------------------------------------------------------
+-- Ex25: ISR context save/restore  (AIL#28)
+--
+-- Build a minimal ISR proc (seq [load, store]).  Compile with:
+--   A. saveMode = .none  → no MOVFF, RETFIE 0 emitted.
+--   B. saveMode = .full  → MOVFF prologue/epilogue emitted, RETFIE 0 at end.
+--   C. saveMode = .fast  → no MOVFF, RETFIE FAST (1) emitted.
+--   D. .full save-slot EQU declarations appear in data section.
+--   E. Reset vector with saveMode = .none still emits RETURN.
+-- ---------------------------------------------------------------------------
+
+def runISRSaveTest : IO Unit := do
+  IO.println "=== Ex25: ISR context save/restore  (AIL#28) ==="
+  let pass := "PASS"; let fail := "FAIL"
+  -- Build a tiny ISR proc: load src → store dst
+  let n_src : Node := .data .data .w8 0x30 "src"
+  let h_src := hashNode n_src
+  let n_dst : Node := .data .data .w8 0x31 "dst"
+  let h_dst := hashNode n_dst
+  let n_ld  : Node := .proc #[h_src] #[] (.atomic (.abstract .load) #[h_src] #[]) "load"
+  let h_ld  := hashNode n_ld
+  let n_st  : Node := .proc #[] #[h_dst] (.atomic (.abstract .store) #[] #[h_dst]) "store"
+  let h_st  := hashNode n_st
+  let n_isr : Node := .proc #[] #[] (.seq #[h_ld, h_st]) "isr"
+  let h_isr := hashNode n_isr
+  let n_rst : Node := .proc #[] #[] (.seq #[h_ld, h_st]) "rst"
+  let h_rst := hashNode n_rst
+  let s25 := Store.insert Store.empty h_src n_src
+  let s25 := Store.insert s25 h_dst n_dst
+  let s25 := Store.insert s25 h_ld  n_ld
+  let s25 := Store.insert s25 h_st  n_st
+  let s25 := Store.insert s25 h_isr n_isr
+  let store := Store.insert s25 h_rst n_rst
+  let tyEnv := match checkStore targetConfig store with
+    | .ok e => e | .error _ => fun _ => none
+  -- -------------------------------------------------------------------------
+  -- Part A: saveMode = .none for hiISR → no MOVFF, RETFIE 0 emitted
+  -- -------------------------------------------------------------------------
+  let chkA_noMovff : Bool := match compile store tyEnv #[(.hiISR, h_isr)] with
+    | .error _ => false
+    | .ok lines =>
+        !(lines.any fun l => !(l.toLower.splitOn "movff").tail.isEmpty)
+  let chkA_retfie0 : Bool := match compile store tyEnv #[(.hiISR, h_isr)] with
+    | .error _ => false
+    | .ok lines =>
+        lines.any fun l =>
+          !(l.toLower.splitOn "retfie").tail.isEmpty &&
+          !(l.splitOn "0").tail.isEmpty
+  IO.println s!"  none: no MOVFF emitted                    : {if chkA_noMovff  then pass else fail}"
+  IO.println s!"  none: RETFIE 0 emitted                    : {if chkA_retfie0  then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- Part B: saveMode = .full for hiISR → MOVFF prologue/epilogue + RETFIE 0
+  -- -------------------------------------------------------------------------
+  let compB := compile store tyEnv #[(.hiISR, h_isr)] NameTable.empty
+                #[(.hiISR, .full)]
+  let chkB_movff : Bool := match compB with
+    | .error _ => false
+    | .ok lines => lines.any fun l => !(l.toLower.splitOn "movff").tail.isEmpty
+  let chkB_status : Bool := match compB with
+    | .error _ => false
+    | .ok lines => lines.any fun l =>
+        !(l.toLower.splitOn "movff").tail.isEmpty &&
+        !(l.splitOn "STATUS").tail.isEmpty
+  let chkB_retfie : Bool := match compB with
+    | .error _ => false
+    | .ok lines => lines.any fun l => !(l.toLower.splitOn "retfie").tail.isEmpty
+  IO.println s!"  full: MOVFF emitted                       : {if chkB_movff   then pass else fail}"
+  IO.println s!"  full: MOVFF STATUS in output              : {if chkB_status  then pass else fail}"
+  IO.println s!"  full: RETFIE emitted                      : {if chkB_retfie  then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- Part C: saveMode = .fast → RETFIE FAST (retfie 1)
+  -- -------------------------------------------------------------------------
+  let chkC_fast : Bool :=
+    match compile store tyEnv #[(.hiISR, h_isr)] NameTable.empty #[(.hiISR, .fast)] with
+    | .error _ => false
+    | .ok lines => lines.any fun l =>
+        !(l.toLower.splitOn "retfie").tail.isEmpty &&
+        !(l.splitOn "1").tail.isEmpty
+  IO.println s!"  fast: RETFIE FAST (1) emitted             : {if chkC_fast then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- Part D: .full EQU declarations in data section
+  -- -------------------------------------------------------------------------
+  let chkD_equ : Bool :=
+    match compile store tyEnv #[(.hiISR, h_isr)] NameTable.empty #[(.hiISR, .full)] with
+    | .error _ => false
+    | .ok lines => lines.any fun l =>
+        !(l.splitOn "_ail_save_hiISR_wreg").tail.isEmpty &&
+        !(l.splitOn "EQU").tail.isEmpty
+  IO.println s!"  full: save-slot EQU in data section       : {if chkD_equ then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- Part E: reset vector with saveMode = .none still emits RETURN
+  -- -------------------------------------------------------------------------
+  let chkE_ret : Bool :=
+    match compile store tyEnv #[(.reset, h_rst)] with
+    | .error _ => false
+    | .ok lines => lines.any fun l => l.trim == "return"
+  IO.println s!"  reset + none: RETURN emitted              : {if chkE_ret then pass else fail}"
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
@@ -1627,4 +1725,6 @@ def main : IO Unit := do
   runBudgetCheckTest
   IO.println ""
   runBankedRAMTest
+  IO.println ""
+  runISRSaveTest
   IO.println ""

@@ -53,7 +53,7 @@ def pic18Capabilities : CapabilityRecord where
     "loopBoundDecrement: 8-bit only; 16/32-bit bounds need multi-byte decrement",
     "callSpecialisation: formals not substituted at call sites; shared memory convention only",
     "subroutineOrdering: callees emitted inline at call site, not scheduled after caller RETURN",
-    "isrContextSave: no prologue/epilogue emitted for ISR save/restore (AIL#28)"
+    "isrContextSave: full/fast save modes supported (AIL#28); save slots at access-bank 0x060+; no FSR3/PRODH/PRODL save"
   ]
 
   -- PIC18 typical device limits (PIC18F series mid-range).
