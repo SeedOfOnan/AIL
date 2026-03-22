@@ -66,6 +66,12 @@ inductive DiagnosticKind where
       Fix: insert an explicit store-to-temp before the clobbering op, or
       reorder the seq steps so the consumer precedes the next definer. -/
   | WREGClobber
+  /-- A proc declares a FormalKind.flag ret for a flag that the enclosed op
+      does not produce (AIL#31). For example, declaring a .C (Carry) ret on a
+      proc whose body is xorImm — which does not set the Carry flag.
+      Fix: change the flag kind to match what the op actually produces, or
+      change the op. -/
+  | FlagNotProduced
 deriving Repr, BEq, DecidableEq
 
 def DiagnosticKind.toJson : DiagnosticKind → String
@@ -74,6 +80,7 @@ def DiagnosticKind.toJson : DiagnosticKind → String
   | .ReadClearsUnacked  => "\"ReadClearsUnacked\""
   | .FSRConflict        => "\"FSRConflict\""
   | .WREGClobber        => "\"WREGClobber\""
+  | .FlagNotProduced    => "\"FlagNotProduced\""
 
 -- ---------------------------------------------------------------------------
 -- FixSuggestion  (R5.5 — machine-applicable patches)

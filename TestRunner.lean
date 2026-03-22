@@ -1171,6 +1171,93 @@ def runWREGCheckTest : IO Unit := do
   IO.println s!"  clobber diag: kind=WREGClobber warning : {bif chkD2 then pass else fail}"
 
 -- ---------------------------------------------------------------------------
+-- Ex18: Typed flag outputs  (AIL#31)
+--
+-- Tests FormalKind.flag, flagBitPos, and emitFlagSkip.
+--
+-- Part A — FlagKind hash distinctness and type inference:
+--   Create formal nodes for each FlagKind; verify hashes are pairwise distinct.
+--   Verify inferTy returns Ty.bool for each (flag formals are bool-typed).
+--
+-- Part B — flagBitPos spot checks:
+--   C=0, Z=2, N=4 per DS40002329F §3.7.1.
+--
+-- Part C — checkStore passes for a proc with FormalKind.flag ret:
+--   Build: proc [] [flag_Z] (xorImm 0x00) — "test if WREG is zero"
+--   Expected: checkStore PASS (flag ret resolves to Ty.bool).
+--
+-- Part D — compile emits BTFSS STATUS after flag-producing op in cond:
+--   Build: cond (xorImm_zero) thenB elseB where xorImm_zero has flag_Z ret.
+--   Expected: assembly contains "btfss STATUS" (from emitFlagSkip).
+-- ---------------------------------------------------------------------------
+
+def runFlagOutputTest : IO Unit := do
+  IO.println "=== Ex18: Typed flag outputs  (AIL#31) ==="
+  let pass := "PASS"; let fail := "FAIL"
+  -- -------------------------------------------------------------------------
+  -- Part A — FlagKind hash distinctness and Ty.bool inference
+  -- -------------------------------------------------------------------------
+  let f_C  : Node := .formal 0 (.flag .C)
+  let f_DC : Node := .formal 0 (.flag .DC)
+  let f_Z  : Node := .formal 0 (.flag .Z)
+  let f_OV : Node := .formal 0 (.flag .OV)
+  let f_N  : Node := .formal 0 (.flag .N)
+  let flags := [f_C, f_DC, f_Z, f_OV, f_N]
+  let hashes := flags.map hashNode
+  -- Check all distinct: count unique hashes by folding into a set
+  let chkA1 : Bool :=
+    let uniq := hashes.foldl (fun acc h => if acc.contains h then acc else acc ++ [h]) []
+    uniq.length == hashes.length
+  let chkA2 : Bool := flags.all fun f =>
+    inferTy targetConfig (fun _ => none) f == some Ty.bool
+  IO.println s!"  all FlagKind formals have distinct hashes : {if chkA1 then pass else fail}"
+  IO.println s!"  inferTy (flag _) = Ty.bool for all flags  : {if chkA2 then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- Part B — flagBitPos spot checks
+  -- -------------------------------------------------------------------------
+  let chkB1 : Bool := flagBitPos .C == 0
+  let chkB2 : Bool := flagBitPos .Z == 2
+  let chkB3 : Bool := flagBitPos .N == 4
+  IO.println s!"  flagBitPos .C = 0                         : {if chkB1 then pass else fail}"
+  IO.println s!"  flagBitPos .Z = 2                         : {if chkB2 then pass else fail}"
+  IO.println s!"  flagBitPos .N = 4                         : {if chkB3 then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- Part C — checkStore passes for proc with FormalKind.flag ret
+  -- -------------------------------------------------------------------------
+  let (_, s18) := StoreM.run <| do
+    let h_flagZ ← StoreM.node (.formal 100 (.flag .Z))
+    StoreM.node (.proc #[] #[h_flagZ] (.atomic (.abstract (.xorImm 0x00)) #[] #[]) "xorImm_testZ")
+  let chkC : Bool := match checkStore targetConfig s18 with
+    | .ok _      => true
+    | .error _   => false
+  IO.println s!"  checkStore: proc with flag_Z ret          : {if chkC then pass else fail}"
+  -- -------------------------------------------------------------------------
+  -- Part D — compile emits BTFSS STATUS after xorImm in cond position
+  -- -------------------------------------------------------------------------
+  let (h_cond_root, s18d) := StoreM.run <| do
+    -- test proc: xorImm 0x00 with flag Z ret (XORLW sets Z if WREG was 0)
+    let h_flagZ  ← StoreM.node (.formal 200 (.flag .Z))
+    let h_test   ← StoreM.node (.proc #[] #[h_flagZ]
+                                  (.atomic (.abstract (.xorImm 0x00)) #[] #[])
+                                  "xorImm_testZ")
+    -- minimal then/else branch procs (no-op seqs)
+    let h_thenB  ← StoreM.node (.proc #[] #[] (.seq #[]) "thenB")
+    let h_elseB  ← StoreM.node (.proc #[] #[] (.seq #[]) "elseB")
+    StoreM.node (.proc #[] #[] (.cond h_test h_thenB h_elseB) "flagCond")
+  match checkStore targetConfig s18d with
+  | .error d =>
+      IO.println s!"  compile emits btfss STATUS: FAIL (checkStore: {d.message})"
+  | .ok tyEnv =>
+      match compile s18d tyEnv #[(0, h_cond_root)] with
+      | .error msg =>
+          IO.println s!"  compile emits btfss STATUS: FAIL (compile: {msg})"
+      | .ok lines =>
+          let hasBtfss := lines.any fun l =>
+            !(l.toLower.splitOn "btfss").tail.isEmpty &&
+            !(l.splitOn "STATUS").tail.isEmpty
+          IO.println s!"  compile emits btfss STATUS            : {if hasBtfss then pass else fail}"
+
+-- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
@@ -1194,4 +1281,6 @@ def main : IO Unit := do
   runGitLayoutTest
   IO.println ""
   runWREGCheckTest
+  IO.println ""
+  runFlagOutputTest
   IO.println ""

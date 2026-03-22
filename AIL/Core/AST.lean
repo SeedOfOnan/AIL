@@ -68,15 +68,28 @@ inductive RegKind where
   | wreg  -- WREG: the 8-bit accumulator; implicit operand for most PIC18 ALU ops
 deriving Repr, BEq, DecidableEq
 
+/-- STATUS register flag kinds (AIL#31).
+    Named flags that arithmetic/compare ops produce as typed bool outputs.
+    The emitter maps each FlagKind to its bit position in the target's status register.
+    Tier-neutral: bit positions are target-specific (see Emitter.lean). -/
+inductive FlagKind where
+  | C   -- Carry / Borrow
+  | DC  -- Digit Carry (BCD half-carry)
+  | Z   -- Zero
+  | OV  -- Overflow (signed)
+  | N   -- Negative (sign bit)
+deriving Repr, BEq, DecidableEq
+
 /-- The kind of a formal parameter or return value.
     Formals with kind = data will be bound to data/peripheral nodes at call sites.
     Formals with kind = bool carry status register outputs (C, Z, OV, N, DC, ...).
     Formals with kind = reg carry machine register values (AIL#21). -/
 inductive FormalKind where
   | data (space : AddrSpace) (width : Width)  -- binds to a data or peripheral node
-  | bool                                       -- a status flag or boolean condition
+  | bool                                       -- a general boolean (e.g. from testBit)
   | unit                                       -- a computation producing no value
   | reg  (r : RegKind)                         -- a machine register (typed calling convention)
+  | flag (f : FlagKind)                        -- a STATUS register flag output (AIL#31)
 deriving Repr, BEq, DecidableEq
 
 -- ---------------------------------------------------------------------------

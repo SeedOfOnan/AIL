@@ -13,7 +13,7 @@
 -- KNOWN LIMITATIONS / TODOs (each marked inline):
 --   - Banked RAM access (BSR not managed; only Access Bank 0x00–0xFF supported)
 --   - testBit bit-index must be a compile-time constant (dynamic not supported)
---   - Bool condition protocol not yet wired (branch condition is approximate)
+--   - Flag-producing ops supported in cond/whileLoop via emitFlagSkip (AIL#31)
 --   - Interrupt handler context save/restore not yet emitted
 --   - Loop bound decrement not yet a typed instruction (emitted as comment)
 --   - NameTable not consulted for callee labels (uses hash-derived labels)
@@ -148,6 +148,66 @@ private def resolveAddr (h : Hash) : Emit String := do
       return sym
   | _ =>
       throw s!"emitter: hash {h} is not a data, peripheral, or staticArray node"
+
+-- ---------------------------------------------------------------------------
+-- Flag output support (AIL#31)
+-- ---------------------------------------------------------------------------
+
+/-- Bit position of each FlagKind in the PIC18 STATUS register (DS40002329F §3.7.1).
+    STATUS is at SFR address 0xFD8; all five flags are in the low 5 bits. -/
+def flagBitPos : FlagKind → UInt8
+  | .C  => 0
+  | .DC => 1
+  | .Z  => 2
+  | .OV => 3
+  | .N  => 4
+
+-- The PIC18 STATUS register symbol. Predefined by the XC8 assembler; no EQU needed.
+private def statusRegSym : String := "STATUS"
+
+/-- The STATUS flags produced by each AbstractOp on PIC18.
+    Conservative: only flags that are definitely set by the instruction.
+    Used to validate FormalKind.flag rets (FlagNotProduced diagnostic — TODO: enforce).
+    Source: PIC18 Instruction Set Summary (DS39500A / DS40002329F). -/
+def flagOutputs : AbstractOp → Array FlagKind
+  | .load        => #[.Z, .N]   -- MOVF f,W: sets Z, N
+  | .loadDiscard => #[.Z, .N]   -- same instruction
+  | .add         => #[.C, .DC, .Z, .OV, .N]  -- ADDWF
+  | .sub         => #[.C, .DC, .Z, .OV, .N]  -- SUBWF
+  | .and         => #[.Z, .N]   -- ANDWF
+  | .or          => #[.Z, .N]   -- IORWF
+  | .xor         => #[.Z, .N]   -- XORWF
+  | .addImm _    => #[.C, .DC, .Z, .OV, .N]  -- ADDLW
+  | .xorImm _    => #[.Z, .N]   -- XORLW
+  | .andImm _    => #[.Z, .N]   -- ANDLW
+  | .movImm _    => #[]          -- MOVLW does NOT affect STATUS
+  | .compare     => #[]          -- CPFSEQ is a skip; does not set STATUS flags
+  | _            => #[]
+
+/-- After emitting a flag-producing atomic proc as a condition test, append
+    BTFSS STATUS, bit if the proc declares a FormalKind.flag ret.
+    This completes the PIC18 skip protocol for cond/whileLoop:
+      <arithmetic op>   ; sets STATUS flags as a side effect
+      btfss STATUS, N   ; skip GOTO when condition is TRUE (flag is set)
+      goto _else        ; taken when FALSE
+    Only acts on ProcBody.atomic procs with non-skip ops; all other body forms
+    (seq, testBit, compare) are assumed to already end with a skip instruction. -/
+private def emitFlagSkip (testH : Hash) : Emit Unit := do
+  match ← lookupNode testH with
+  | Node.proc _ rets (ProcBody.atomic (.abstract op) _ _) _ =>
+      -- Direct-skip ops (testBit, compare) already emit a PIC18 skip instruction;
+      -- do not add a redundant BTFSS.
+      match op with
+      | .testBit | .compare => return
+      | _ =>
+          -- Find the first flag-kind ret and emit BTFSS STATUS, bit.
+          for retH in rets do
+            match ← lookupNode retH with
+            | Node.formal _ (.flag f) =>
+                out (.btfss statusRegSym (flagBitPos f))
+                return
+            | _ => pure ()
+  | _ => pure ()
 
 -- Resolve a bitField node to (register_symbol, bit_position).
 -- Used by testBit, setBit, clearBit op emitters.
@@ -330,10 +390,12 @@ partial def emitProcBody (params : Array Hash) (body : ProcBody) : Emit Unit := 
       -- PIC18 condition model: the test proc ends with a skip instruction
       -- (BTFSC / CPFSEQ / etc.) that skips one instruction when true.
       -- We emit GOTO else as the "skipped" instruction, fall through to then.
-      -- TODO: formalise the skip-style condition protocol so any bool proc works.
+      -- For flag-producing ops (xorImm, addImm, etc.) emitFlagSkip appends
+      -- BTFSS STATUS, bit to complete the skip protocol (AIL#31).
       let lblElse ← freshLabel "else"
       let lblEnd  ← freshLabel "end"
       emitNode test
+      emitFlagSkip test        -- no-op if test already ends with a skip insn
       out (.goto_ lblElse)     -- skipped when condition is true
       emitNode thenB
       out (.goto_ lblEnd)
@@ -381,6 +443,7 @@ partial def emitProcBody (params : Array Hash) (body : ProcBody) : Emit Unit := 
       let lblDone ← freshLabel "whileDone"
       out (.lbl lblTop)
       emitNode cond
+      emitFlagSkip cond      -- no-op if cond already ends with a skip insn (AIL#31)
       out (.goto_ lblDone)   -- skipped when condition TRUE (fall through to body)
       emitNode body
       out (.goto_ lblTop)

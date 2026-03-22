@@ -71,11 +71,19 @@ private def serAccessSemantics (a : AccessSemantics) : ByteArray :=
 private def serRegKind : RegKind → ByteArray
   | .wreg => serU8 0
 
+private def serFlagKind : FlagKind → ByteArray
+  | .C  => serU8 0
+  | .DC => serU8 1
+  | .Z  => serU8 2
+  | .OV => serU8 3
+  | .N  => serU8 4
+
 private def serFormalKind : FormalKind → ByteArray
   | .data space width => serU8 0 ++ serAddrSpace space ++ serWidth width
   | .bool             => serU8 1
   | .unit             => serU8 2
   | .reg r            => serU8 3 ++ serRegKind r
+  | .flag f           => serU8 4 ++ serFlagKind f
 
 private def serAbstractOp : AbstractOp → ByteArray
   | .add         => serU8  0  | .sub         => serU8  1  | .mul         => serU8  2

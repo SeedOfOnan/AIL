@@ -47,7 +47,7 @@ def pic18Capabilities : CapabilityRecord where
 
   limitations := #[
     "bankedRAM: only Access Bank 0x00-0xFF; BSR register not managed",
-    "boolConditionProtocol: skip-style only; generalised bool proc protocol not yet wired",
+    "boolConditionProtocol: skip-style; testBit/compare emit skip insns; flag-producing ops supported via emitFlagSkip (AIL#31); generalised bool proc not yet wired",
     "loopBoundDecrement: 8-bit only; 16/32-bit bounds need multi-byte decrement",
     "callSpecialisation: formals not substituted at call sites; shared memory convention only",
     "subroutineOrdering: callees emitted inline at call site, not scheduled after caller RETURN",

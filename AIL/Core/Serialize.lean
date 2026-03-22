@@ -83,11 +83,19 @@ private def serAccessSemanticsS (a : AccessSemantics) : ByteArray :=
 private def serRegKindS : RegKind → ByteArray
   | .wreg => serU8S 0
 
+private def serFlagKindS : FlagKind → ByteArray
+  | .C  => serU8S 0
+  | .DC => serU8S 1
+  | .Z  => serU8S 2
+  | .OV => serU8S 3
+  | .N  => serU8S 4
+
 private def serFormalKindS : FormalKind → ByteArray
   | .data space width => serU8S 0 ++ serAddrSpaceS space ++ serWidthS width
   | .bool             => serU8S 1
   | .unit             => serU8S 2
   | .reg r            => serU8S 3 ++ serRegKindS r
+  | .flag f           => serU8S 4 ++ serFlagKindS f
 
 private def serAbstractOpS : AbstractOp → ByteArray
   | .add         => serU8S  0  | .sub         => serU8S  1  | .mul         => serU8S  2
@@ -232,12 +240,22 @@ private def readRegKind : Parser RegKind := do
   | 0 => return .wreg
   | t => throw s!"unknown RegKind tag {t}"
 
+private def readFlagKind : Parser FlagKind := do
+  match ← readU8 with
+  | 0 => return .C
+  | 1 => return .DC
+  | 2 => return .Z
+  | 3 => return .OV
+  | 4 => return .N
+  | t => throw s!"unknown FlagKind tag {t}"
+
 private def readFormalKind : Parser FormalKind := do
   match ← readU8 with
   | 0 => return .data (← readAddrSpace) (← readWidth)
   | 1 => return .bool
   | 2 => return .unit
   | 3 => return .reg (← readRegKind)
+  | 4 => return .flag (← readFlagKind)
   | t => throw s!"unknown FormalKind tag {t}"
 
 private def readAbstractOp : Parser AbstractOp := do

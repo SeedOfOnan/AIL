@@ -48,12 +48,16 @@ inductive Ty : Type where
   | proc (params : List Ty) (rets : List Ty) (maxBodyDepth : Nat) : Ty
 deriving Repr, BEq
 
-/-- Map FormalKind to Ty. -/
+/-- Map FormalKind to Ty.
+    Flag formals map to Ty.bool — they are booleans at the type level.
+    The FlagKind distinction matters to the emitter (which STATUS bit to read)
+    but not to the type checker (both are boolean-valued). -/
 def formalTy : FormalKind → Ty
   | .data space width => Ty.data space width
   | .bool             => Ty.bool
   | .unit             => Ty.unit
   | .reg r            => Ty.reg r
+  | .flag _           => Ty.bool
 
 -- ---------------------------------------------------------------------------
 -- Type environment
